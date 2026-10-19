@@ -25,11 +25,13 @@ st.set_page_config(
 # CONFIGURATION
 # ============================================================
 
+
 GEOJSON_URL = (
     "https://raw.githubusercontent.com/"
     "iamaanahmad/GeoJson-of-Indian-States/"
-    "main/indian-states.geojson"
+    "master/indian-states.geojson"
 )
+
 
 CACHE_VERSION = "1"
 
