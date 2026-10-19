@@ -1,6 +1,7 @@
 
 import json
 import re
+from io import BytesIO
 
 import pandas as pd
 import plotly.graph_objects as go
@@ -8,9 +9,9 @@ import requests
 import streamlit as st
 
 
-# ---------------------------------------------------------
+# ============================================================
 # PAGE CONFIGURATION
-# ---------------------------------------------------------
+# ============================================================
 
 st.set_page_config(
     page_title="India Development Atlas",
@@ -20,17 +21,62 @@ st.set_page_config(
 )
 
 
-# ---------------------------------------------------------
-# CONSTANTS
-# ---------------------------------------------------------
+# ============================================================
+# CONFIGURATION
+# ============================================================
 
 GEOJSON_URL = (
     "https://raw.githubusercontent.com/"
-    "india-in-data/india_maps/master/"
-    "india_state_ut_administered.geojson"
+    "iamaanahmad/GeoJson-of-Indian-States/"
+    "main/indian-states.geojson"
 )
 
-REQUEST_TIMEOUT = 30
+CACHE_VERSION = "1"
+
+INDICATORS = {
+    "Poverty rate (%)": {
+        "column": "Poverty_Rate_Percent",
+        "unit": "%",
+        "description": "Share of the population below a defined poverty threshold.",
+        "source": "NITI Aayog / official poverty statistics",
+    },
+    "Multidimensional poverty (%)": {
+        "column": "Multidimensional_Poverty_Percent",
+        "unit": "%",
+        "description": "Share of the population experiencing multidimensional poverty.",
+        "source": "NITI Aayog National Multidimensional Poverty Index",
+    },
+    "Literacy rate (%)": {
+        "column": "Literacy_Rate_Percent",
+        "unit": "%",
+        "description": "Literacy rate for the relevant population and reference year.",
+        "source": "Census of India",
+    },
+    "GDP per capita (₹)": {
+        "column": "GDP_Per_Capita_INR",
+        "unit": "₹",
+        "description": "Per-capita output. The price basis and year must be documented.",
+        "source": "Official state domestic product statistics",
+    },
+    "Unemployment rate (%)": {
+        "column": "Unemployment_Rate_Percent",
+        "unit": "%",
+        "description": "Unemployment rate for the specified survey definition and period.",
+        "source": "Periodic Labour Force Survey",
+    },
+    "School enrolment (%)": {
+        "column": "School_Enrolment_Percent",
+        "unit": "%",
+        "description": "School enrolment indicator for a specified age group.",
+        "source": "UDISE+ / Ministry of Education",
+    },
+    "Health expenditure per capita (₹)": {
+        "column": "Health_Expenditure_Per_Capita_INR",
+        "unit": "₹",
+        "description": "Per-capita health expenditure using a documented definition.",
+        "source": "National Health Accounts / official state data",
+    },
+}
 
 REGIONS = [
     "Andhra Pradesh",
@@ -71,15 +117,31 @@ REGIONS = [
     "Puducherry",
 ]
 
-REGION_ALIASES = {
+ISLAND_REGIONS = {
+    "Andaman and Nicobar Islands",
+    "Lakshadweep",
+}
+
+UT_REGIONS = {
+    "Andaman and Nicobar Islands",
+    "Chandigarh",
+    "Dadra and Nagar Haveli and Daman and Diu",
+    "Delhi",
+    "Jammu and Kashmir",
+    "Ladakh",
+    "Lakshadweep",
+    "Puducherry",
+}
+
+ALIASES = {
+    "orissa": "Odisha",
+    "pondicherry": "Puducherry",
     "nct of delhi": "Delhi",
     "national capital territory of delhi": "Delhi",
-    "orissa": "Odisha",
-    "uttaranchal": "Uttarakhand",
     "jammu & kashmir": "Jammu and Kashmir",
+    "jammu and kashmir": "Jammu and Kashmir",
     "andaman & nicobar islands": "Andaman and Nicobar Islands",
     "andaman and nicobar": "Andaman and Nicobar Islands",
-    "pondicherry": "Puducherry",
     "dadra and nagar haveli": (
         "Dadra and Nagar Haveli and Daman and Diu"
     ),
@@ -92,437 +154,510 @@ REGION_ALIASES = {
     "dadra and nagar haveli and daman and diu": (
         "Dadra and Nagar Haveli and Daman and Diu"
     ),
-    "nct": "Delhi",
-}
-
-# These are placeholders until actual official indicator data
-# are connected. Do not interpret them as real development scores.
-INDICATORS = {
-    "Overall development score": {
-        "column": "Development_Score",
-        "unit": "Index",
-        "description": "Composite development score",
-    },
-    "Multidimensional poverty": {
-        "column": "MPI_Poverty",
-        "unit": "%",
-        "description": "Population experiencing multidimensional poverty",
-    },
-    "Literacy rate": {
-        "column": "Literacy_Rate",
-        "unit": "%",
-        "description": "Literacy rate",
-    },
-    "Per-capita income": {
-        "column": "Per_Capita_Income",
-        "unit": "₹",
-        "description": "Per-capita income",
-    },
-    "Unemployment rate": {
-        "column": "Unemployment_Rate",
-        "unit": "%",
-        "description": "Unemployment rate",
-    },
 }
 
 
-# ---------------------------------------------------------
-# HELPER FUNCTIONS
-# ---------------------------------------------------------
+# ============================================================
+# NAME NORMALISATION
+# ============================================================
 
-def normalise_name(value):
-    """Standardise region names for matching GeoJSON and data."""
-
+def clean_name(value):
+    """Convert a name to a consistent comparison format."""
     if value is None:
         return ""
 
-    name = str(value).strip().lower()
-    name = name.replace("&", "and")
-    name = re.sub(r"[_-]+", " ", name)
-    name = re.sub(r"\s+", " ", name).strip()
-
-    if name in REGION_ALIASES:
-        return REGION_ALIASES[name]
-
-    for region in REGIONS:
-        if name == region.lower():
-            return region
-
-    return name.title()
+    value = str(value).strip().lower()
+    value = value.replace("&", "and")
+    value = re.sub(r"[^a-z0-9]+", " ", value)
+    return " ".join(value.split())
 
 
-def find_region_property(features):
-    """Find the GeoJSON property containing state/UT names."""
-
-    preferred_keys = [
-        "STNAME",
-        "stname",
-        "NAME_1",
-        "name_1",
-        "state_name",
-        "State_Name",
-        "STATE",
-        "State",
-        "state",
-        "ST_NM",
-        "st_nm",
-        "shapeName",
-        "NAME",
-        "name",
-        "NAME_0",
-        "admin",
-        "region",
-    ]
-
-    if not features:
-        raise ValueError("The GeoJSON contains no features.")
-
-    existing_keys = set()
-
-    for feature in features:
-        properties = feature.get("properties", {})
-        existing_keys.update(properties.keys())
-
-    # Try recognised property names first.
-    for key in preferred_keys:
-        if key not in existing_keys:
-            continue
-
-        values = [
-            feature.get("properties", {}).get(key)
-            for feature in features
-        ]
-
-        matched = sum(
-            normalise_name(value) in REGIONS
-            for value in values
-        )
-
-        if matched >= 20:
-            return key
-
-    # Fallback: inspect all properties and select the one that
-    # matches the largest number of known state/UT names.
-    best_key = None
-    best_count = 0
-
-    for key in existing_keys:
-        values = [
-            feature.get("properties", {}).get(key)
-            for feature in features
-        ]
-
-        matched = sum(
-            normalise_name(value) in REGIONS
-            for value in values
-        )
-
-        if matched > best_count:
-            best_key = key
-            best_count = matched
-
-    if best_key is None or best_count < 20:
-        raise ValueError(
-            "Could not identify state/UT names in the GeoJSON. "
-            f"Best property: {best_key!r}; matches: {best_count}."
-        )
-
-    return best_key
+REGION_LOOKUP = {
+    clean_name(region): region for region in REGIONS
+}
 
 
-@st.cache_data(ttl=86400, show_spinner=False)
-def load_geojson():
-    """Download and prepare India's state/UT GeoJSON."""
+def canonical_region(value):
+    """Return the official atlas region name where possible."""
+    key = clean_name(value)
 
+    if key in REGION_LOOKUP:
+        return REGION_LOOKUP[key]
+
+    if key in ALIASES:
+        return ALIASES[key]
+
+    # Handle common variants after punctuation normalisation.
+    for alias, official_name in ALIASES.items():
+        if clean_name(alias) == key:
+            return official_name
+
+    return None
+
+
+# ============================================================
+# GEOJSON LOADING AND VALIDATION
+# ============================================================
+
+@st.cache_data(show_spinner=False, ttl=86400)
+def load_geojson(cache_version=CACHE_VERSION):
+    """
+    Download and prepare state/UT GeoJSON.
+
+    Returns:
+        prepared_geojson: features with properties.atlas_region
+        matched_regions: canonical region names found
+        missing_regions: expected names not found
+        skipped_features: feature names that could not be matched
+    """
     response = requests.get(
         GEOJSON_URL,
-        timeout=REQUEST_TIMEOUT,
+        timeout=45,
         headers={"User-Agent": "IndiaDevelopmentAtlas/1.0"},
     )
     response.raise_for_status()
 
-    geojson = response.json()
+    raw = response.json()
 
-    if geojson.get("type") != "FeatureCollection":
+    if raw.get("type") != "FeatureCollection":
         raise ValueError(
-            "The map source did not return a GeoJSON FeatureCollection."
+            "The boundary URL did not return a GeoJSON FeatureCollection."
         )
 
-    features = geojson.get("features", [])
+    features = raw.get("features", [])
 
     if not features:
-        raise ValueError("The GeoJSON FeatureCollection is empty.")
-
-    name_key = find_region_property(features)
+        raise ValueError("The GeoJSON file contains no features.")
 
     prepared_features = []
     matched_regions = set()
-    skipped_features = 0
+    skipped_features = []
 
     for feature in features:
-        properties = feature.get("properties", {})
-        raw_name = properties.get(name_key)
-        region_name = normalise_name(raw_name)
+        properties = feature.get("properties") or {}
+
+        # This repository documents the field as "name".
+        # Fallbacks allow for compatible GeoJSON files if the source changes.
+        candidate_keys = [
+            "name",
+            "NAME_1",
+            "NAME",
+            "ST_NM",
+            "shapeName",
+            "state_name",
+            "STATE",
+            "State",
+            "admin",
+            "state",
+        ]
+
+        region_name = None
+
+        for key in candidate_keys:
+            if properties.get(key) is not None:
+                region_name = canonical_region(properties[key])
+                if region_name:
+                    break
+
+        if not region_name:
+            raw_name = (
+                properties.get("name")
+                or properties.get("NAME_1")
+                or properties.get("NAME")
+                or properties.get("shapeName")
+                or properties.get("admin")
+                or "Unknown feature"
+            )
+            skipped_features.append(str(raw_name))
+            continue
 
         geometry = feature.get("geometry")
 
-        if not geometry or not geometry.get("coordinates"):
-            skipped_features += 1
+        if not geometry or geometry.get("type") not in {
+            "Polygon",
+            "MultiPolygon",
+        }:
+            skipped_features.append(f"{region_name} (invalid geometry)")
             continue
 
-        # Avoid plotting unrelated features that cannot be matched
-        # to a recognised Indian state or union territory.
-        if region_name not in REGIONS:
-            skipped_features += 1
-            continue
-
-        # Work on a copy rather than mutating the downloaded object.
-        prepared = {
+        new_feature = {
             "type": "Feature",
+            "geometry": geometry,
             "properties": {
                 **properties,
                 "atlas_region": region_name,
             },
-            "geometry": geometry,
         }
 
-        prepared_features.append(prepared)
+        prepared_features.append(new_feature)
         matched_regions.add(region_name)
 
-    if not prepared_features:
-        raise ValueError(
-            "The GeoJSON loaded, but no state/UT features matched. "
-            f"Detected name property: {name_key!r}."
-        )
+    missing_regions = sorted(set(REGIONS) - matched_regions)
 
     prepared_geojson = {
         "type": "FeatureCollection",
         "features": prepared_features,
     }
 
-    missing_regions = sorted(set(REGIONS) - matched_regions)
+    if not prepared_features:
+        raise ValueError(
+            "No state or Union Territory names could be matched "
+            "in the downloaded GeoJSON."
+        )
 
     return (
         prepared_geojson,
         sorted(matched_regions),
         missing_regions,
-        name_key,
         skipped_features,
     )
 
 
-@st.cache_data(show_spinner=False)
+# ============================================================
+# DATASET
+# ============================================================
+
 def create_empty_dataset():
-    """Create a blank data template without inventing scores."""
+    """
+    Create a blank data template.
 
-    data = pd.DataFrame({"Region": REGIONS})
+    No development values are fabricated. Add sourced values
+    and their reference years when official data is collected.
+    """
+    rows = []
 
-    data["Development_Score"] = None
-    data["MPI_Poverty"] = None
-    data["Literacy_Rate"] = None
-    data["Per_Capita_Income"] = None
-    data["Unemployment_Rate"] = None
-    data["Data_Year"] = None
-    data["Data_Source"] = None
-
-    return data
-
-
-def format_value(value, indicator):
-    """Format a displayed indicator value."""
-
-    if pd.isna(value):
-        return "Not available"
-
-    unit = INDICATORS[indicator]["unit"]
-
-    if unit == "₹":
-        return f"₹{value:,.0f}"
-
-    if unit == "%":
-        return f"{value:.1f}%"
-
-    return f"{value:.2f}"
-
-
-def make_map(geojson, dataset, indicator):
-    """Build a state-level choropleth with a stable India view."""
-
-    column = INDICATORS[indicator]["column"]
-
-    value_lookup = dataset.set_index("Region")[column].to_dict()
-
-    locations = []
-    values = []
-    customdata = []
-
-    for feature in geojson["features"]:
-        region = feature["properties"]["atlas_region"]
-        value = value_lookup.get(region)
-
-        locations.append(region)
-
-        # Plotly needs numeric values to render polygons. Zero here
-        # is only a neutral placeholder when data are missing, not
-        # a claim that the region's real indicator value is zero.
-        values.append(
-            float(value) if pd.notna(value) else 0.0
+    for region in REGIONS:
+        rows.append(
+            {
+                "Region": region,
+                "Region_Type": (
+                    "Union Territory"
+                    if region in UT_REGIONS
+                    else "State"
+                ),
+                "Year": None,
+                "Poverty_Rate_Percent": None,
+                "Multidimensional_Poverty_Percent": None,
+                "Literacy_Rate_Percent": None,
+                "GDP_Per_Capita_INR": None,
+                "Unemployment_Rate_Percent": None,
+                "School_Enrolment_Percent": None,
+                "Health_Expenditure_Per_Capita_INR": None,
+                "Source": None,
+                "Notes": None,
+            }
         )
 
-        customdata.append([
-            region,
-            format_value(value, indicator),
-            (
-                str(dataset.loc[
-                    dataset["Region"] == region, "Data_Year"
-                ].iloc[0])
-                if not dataset.loc[
-                    dataset["Region"] == region, "Data_Year"
-                ].empty
-                and pd.notna(dataset.loc[
-                    dataset["Region"] == region, "Data_Year"
-                ].iloc[0])
-                else "Not available"
-            ),
-        ])
+    return pd.DataFrame(rows)
 
-    has_data = dataset[column].notna().any()
+
+def get_dataset():
+    """
+    Load a user-supplied dataset if present.
+    Otherwise return the blank template.
+    """
+    try:
+        uploaded_dataset = st.session_state.get("uploaded_dataset")
+
+        if uploaded_dataset is not None:
+            return uploaded_dataset.copy()
+
+    except Exception:
+        pass
+
+    return create_empty_dataset()
+
+
+def validate_dataset(df):
+    """Ensure the dataset contains the columns needed by the app."""
+    required_columns = [
+        "Region",
+        "Region_Type",
+        "Year",
+        *[item["column"] for item in INDICATORS.values()],
+        "Source",
+        "Notes",
+    ]
+
+    for column in required_columns:
+        if column not in df.columns:
+            df[column] = None
+
+    df["Region"] = df["Region"].apply(canonical_region)
+    df = df[df["Region"].notna()].copy()
+
+    # If a region appears more than once, preserve its rows.
+    # The map uses the latest available non-missing value.
+    return df
+
+
+def latest_region_values(df, indicator_column):
+    """Return one latest non-missing indicator value per region."""
+    if df.empty or indicator_column not in df.columns:
+        return {}
+
+    data = df.copy()
+    data[indicator_column] = pd.to_numeric(
+        data[indicator_column], errors="coerce"
+    )
+
+    data = data[data[indicator_column].notna()].copy()
+
+    if data.empty:
+        return {}
+
+    if "Year" in data.columns:
+        data["_year_sort"] = pd.to_numeric(
+            data["Year"], errors="coerce"
+        )
+        data = data.sort_values("_year_sort")
+
+    data = data.drop_duplicates("Region", keep="last")
+
+    return dict(zip(data["Region"], data[indicator_column]))
+
+
+# ============================================================
+# MAP HELPERS
+# ============================================================
+
+def filter_geojson(geojson, excluded_regions=None, included_regions=None):
+    excluded_regions = excluded_regions or set()
+
+    features = []
+
+    for feature in geojson["features"]:
+        name = feature["properties"]["atlas_region"]
+
+        if name in excluded_regions:
+            continue
+
+        if included_regions is not None and name not in included_regions:
+            continue
+
+        features.append(feature)
+
+    return {
+        "type": "FeatureCollection",
+        "features": features,
+    }
+
+
+def make_map(
+    geojson,
+    dataset,
+    selected_indicator,
+    selected_region=None,
+    island_map=False,
+):
+    """
+    Create a map with a stable geographic frame.
+
+    When indicator data is absent, show a neutral map rather than
+    pretending that every region has a score of zero.
+    """
+    indicator_column = INDICATORS[selected_indicator]["column"]
+    values_by_region = latest_region_values(
+        dataset, indicator_column
+    )
+
+    if island_map:
+        map_geojson = filter_geojson(
+            geojson,
+            included_regions=ISLAND_REGIONS,
+        )
+        title = "Island territories"
+        height = 300
+    else:
+        map_geojson = filter_geojson(
+            geojson,
+            excluded_regions=ISLAND_REGIONS,
+        )
+        title = "States and Union Territories"
+        height = 650
+
+    features = map_geojson["features"]
+
+    if not features:
+        fig = go.Figure()
+        fig.add_annotation(
+            text="No geographic features available for this map.",
+            x=0.5,
+            y=0.5,
+            xref="paper",
+            yref="paper",
+            showarrow=False,
+        )
+        return fig, False
+
+    locations = [
+        feature["properties"]["atlas_region"]
+        for feature in features
+    ]
+
+    customdata = []
+    z_values = []
+    hover_text = []
+
+    for region in locations:
+        value = values_by_region.get(region)
+
+        if value is None or pd.isna(value):
+            display_value = "No data available"
+        else:
+            display_value = f"{value:,.2f}"
+
+        customdata.append([display_value])
+        hover_text.append(region)
+
+        # Use real indicator values only when present.
+        if value is None or pd.isna(value):
+            z_values.append(None)
+        else:
+            z_values.append(float(value))
+
+    has_data = any(value is not None for value in z_values)
 
     if has_data:
         colorscale = [
-            [0.0, "#E0F2FE"],
-            [0.5, "#60A5FA"],
-            [1.0, "#1D4ED8"],
+            [0.0, "#eff6ff"],
+            [0.25, "#bfdbfe"],
+            [0.5, "#60a5fa"],
+            [0.75, "#2563eb"],
+            [1.0, "#1e3a8a"],
         ]
-        zmin = float(dataset[column].min())
-        zmax = float(dataset[column].max())
+        zmin = min(
+            value for value in z_values if value is not None
+        )
+        zmax = max(
+            value for value in z_values if value is not None
+        )
 
         if zmin == zmax:
             zmax = zmin + 1
     else:
-        # A single neutral fill until genuine data are loaded.
+        # A neutral colour scale is used until real data is uploaded.
         colorscale = [
-            [0.0, "#DCE6F1"],
-            [1.0, "#DCE6F1"],
+            [0.0, "#dbe5f0"],
+            [1.0, "#dbe5f0"],
         ]
+        z_values = [0 for _ in locations]
         zmin = 0
         zmax = 1
 
-    fig = go.Figure(
+    # Highlight the selected region with a separate boundary trace.
+    fig = go.Figure()
+
+    fig.add_trace(
         go.Choropleth(
-            geojson=geojson,
+            geojson=map_geojson,
             featureidkey="properties.atlas_region",
             locations=locations,
-            z=values,
-            customdata=customdata,
-            colorscale=colorscale,
+            z=z_values,
             zmin=zmin,
             zmax=zmax,
+            colorscale=colorscale,
+            showscale=has_data,
+            colorbar={
+                "title": INDICATORS[selected_indicator]["unit"],
+                "thickness": 12,
+                "len": 0.65,
+            } if has_data else None,
             marker={
                 "line": {
-                    "color": "#FFFFFF",
-                    "width": 0.8,
+                    "color": "#ffffff",
+                    "width": 1.1,
                 }
             },
-            colorbar=(
-                {
-                    "title": INDICATORS[indicator]["unit"],
-                    "thickness": 14,
-                    "len": 0.65,
-                }
-                if has_data
-                else None
-            ),
-            showscale=False,
+            customdata=customdata,
             hovertemplate=(
-                "<b>%{customdata[0]}</b><br>"
-                + indicator
-                + ": %{customdata[1]}<br>"
-                + "Data year: %{customdata[2]}"
+                "<b>%{location}</b><br>"
+                + selected_indicator
+                + ": %{customdata[0]}"
                 + "<extra></extra>"
             ),
+            name=title,
         )
     )
+
+    if selected_region and selected_region in locations:
+        selected_geojson = filter_geojson(
+            map_geojson,
+            included_regions={selected_region},
+        )
+
+        fig.add_trace(
+            go.Choropleth(
+                geojson=selected_geojson,
+                featureidkey="properties.atlas_region",
+                locations=[selected_region],
+                z=[1],
+                zmin=0,
+                zmax=1,
+                colorscale=[
+                    [0, "#f59e0b"],
+                    [1, "#f59e0b"],
+                ],
+                showscale=False,
+                marker={
+                    "line": {
+                        "color": "#b45309",
+                        "width": 2.2,
+                    }
+                },
+                hovertemplate=(
+                    "<b>" + selected_region + "</b>"
+                    "<extra>Selected region</extra>"
+                ),
+                name="Selected region",
+            )
+        )
 
     fig.update_geos(
         fitbounds="locations",
         visible=False,
-        showland=True,
-        landcolor="#F8FAFC",
-        showocean=False,
         showcoastlines=False,
         showcountries=False,
-        bgcolor="white",
+        showland=True,
+        landcolor="#f8fafc",
+        showocean=False,
+        bgcolor="#ffffff",
         projection_type="mercator",
     )
 
     fig.update_layout(
-        height=650,
-        margin={"l": 0, "r": 0, "t": 10, "b": 0},
-        paper_bgcolor="white",
-        plot_bgcolor="white",
-        geo={
-            "bgcolor": "white",
+        title={
+            "text": title,
+            "x": 0.02,
+            "xanchor": "left",
         },
-        font={"color": "#1F2937"},
+        height=height,
+        margin={
+            "l": 0,
+            "r": 0,
+            "t": 55,
+            "b": 0,
+        },
+        paper_bgcolor="#ffffff",
+        plot_bgcolor="#ffffff",
+        font={
+            "family": "Arial, sans-serif",
+            "color": "#0f172a",
+        },
+        showlegend=False,
     )
 
     return fig, has_data
 
 
-# ---------------------------------------------------------
-# CUSTOM CSS
-# ---------------------------------------------------------
+# ============================================================
+# SIDEBAR AND HEADER
+# ============================================================
 
-st.markdown(
-    """
-    <style>
-    .block-container {
-        padding-top: 1.8rem;
-        padding-bottom: 2.5rem;
-        max-width: 1500px;
-    }
-
-    h1, h2, h3 {
-        letter-spacing: -0.025em;
-    }
-
-    .atlas-subtitle {
-        color: #64748b;
-        font-size: 1.05rem;
-        margin-top: -0.5rem;
-        margin-bottom: 1.5rem;
-    }
-
-    .atlas-note {
-        background: #f8fafc;
-        border: 1px solid #e2e8f0;
-        border-radius: 10px;
-        padding: 12px 16px;
-        color: #334155;
-        margin: 10px 0 16px 0;
-    }
-
-    footer {
-        visibility: hidden;
-    }
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
-
-
-# ---------------------------------------------------------
-# SIDEBAR
-# ---------------------------------------------------------
-
-st.sidebar.title("🇮🇳 India Development Atlas")
-
+st.sidebar.title("India Development Atlas")
 st.sidebar.caption(
-    "Explore regional development, disparities and indicators."
+    "Explore development indicators across Indian states and UTs."
 )
-
-st.sidebar.divider()
 
 page = st.sidebar.radio(
     "Navigate",
@@ -536,218 +671,212 @@ page = st.sidebar.radio(
 )
 
 st.sidebar.divider()
-
-st.sidebar.markdown("### Data status")
-st.sidebar.info(
-    "The current version uses a geographic boundary file. "
-    "Development indicator values have not yet been connected "
-    "to official datasets."
+st.sidebar.caption(
+    "Data values remain blank until official observations are added."
 )
 
-st.sidebar.markdown(
-    "[NITI Aayog](https://www.niti.gov.in/)  \n"
-    "[Census of India](https://censusindia.gov.in/)  \n"
-    "[Reserve Bank of India](https://www.rbi.org.in/)  \n"
-    "[UDISE+](https://www.udiseplus.gov.in/)  \n"
-    "[data.gov.in](https://www.data.gov.in/)"
+st.title("India Development Atlas")
+st.write(
+    "An interactive platform for exploring socioeconomic "
+    "development and regional differences across India."
 )
 
 
-# ---------------------------------------------------------
+# ============================================================
 # LOAD DATA
-# ---------------------------------------------------------
-
-dataset = create_empty_dataset()
+# ============================================================
 
 try:
-    (
-        geojson,
-        matched_regions,
-        missing_regions,
-        detected_name_key,
-        skipped_features,
-    ) = load_geojson()
+    with st.spinner("Loading state and Union Territory boundaries..."):
+        (
+            geojson,
+            matched_regions,
+            missing_regions,
+            skipped_features,
+        ) = load_geojson()
 
-    map_error = None
+except Exception as error:
+    st.error(
+        "The boundary file could not be loaded. "
+        "The map cannot be displayed until the GeoJSON source is available."
+    )
+    st.code(str(error))
+    st.markdown(
+        f"[Open the GeoJSON source]({GEOJSON_URL})"
+    )
+    st.stop()
 
-except Exception as exc:
-    geojson = None
-    matched_regions = []
-    missing_regions = REGIONS.copy()
-    detected_name_key = None
-    skipped_features = 0
-    map_error = str(exc)
+dataset = validate_dataset(get_dataset())
+
+# Diagnostic details are useful while verifying all 36 regions.
+with st.sidebar.expander("Map diagnostics"):
+    st.write(f"GeoJSON features matched: {len(matched_regions)}")
+    st.write(f"Expected regions: {len(REGIONS)}")
+
+    if missing_regions:
+        st.warning("Regions missing from the boundary file:")
+        st.write(", ".join(missing_regions))
+    else:
+        st.success("All 36 regions were matched.")
+
+    if skipped_features:
+        st.caption("Unmatched GeoJSON features:")
+        st.write(", ".join(skipped_features))
 
 
-# ---------------------------------------------------------
-# PAGE 1: DEVELOPMENT MAP
-# ---------------------------------------------------------
+# ============================================================
+# DEVELOPMENT MAP
+# ============================================================
 
 if page == "Development Map":
+    st.header("Development Map")
 
-    st.title("India: Development Atlas")
+    left, right = st.columns([2, 1])
 
-    st.markdown(
-        '<div class="atlas-subtitle">'
-        "An interactive view of regional development across "
-        "India's states and union territories."
-        "</div>",
-        unsafe_allow_html=True,
-    )
-
-    selected_indicator = st.selectbox(
-        "Select an indicator",
-        list(INDICATORS.keys()),
-    )
-
-    left, middle, right = st.columns(3)
-
-    left.metric("States and UTs in atlas", len(REGIONS))
-    middle.metric("Regions matched in map", len(matched_regions))
-    right.metric("Indicators selected", len(INDICATORS))
-
-    if map_error:
-        st.error(
-            "The map data could not be loaded. "
-            "The app has not silently substituted a fake map."
+    with right:
+        selected_indicator = st.selectbox(
+            "Indicator",
+            list(INDICATORS.keys()),
         )
 
-        with st.expander("Technical details"):
-            st.code(map_error)
-
-        st.markdown(
-            f"[Open the GeoJSON source]({GEOJSON_URL})"
+        selected_region = st.selectbox(
+            "Highlight a region",
+            ["None"] + REGIONS,
         )
 
-    else:
+        if selected_region == "None":
+            selected_region = None
+
+        indicator_info = INDICATORS[selected_indicator]
+
+        st.caption(indicator_info["description"])
+        st.caption(f"Potential source: {indicator_info['source']}")
+
+    with left:
         fig, has_data = make_map(
             geojson,
             dataset,
             selected_indicator,
+            selected_region,
+            island_map=False,
         )
-
         st.plotly_chart(
             fig,
             use_container_width=True,
-            config={
-                "displaylogo": False,
-                "scrollZoom": False,
-                "responsive": True,
-            },
+            config={"displayModeBar": True, "scrollZoom": True},
         )
 
-        if not has_data:
-            st.info(
-                "The geographic boundaries are displayed, but "
-                "indicator values are not connected yet. The "
-                "neutral fill is not a development ranking."
-            )
+    # Island territories have their own enlarged map so they remain visible.
+    st.subheader("Island territories")
+    st.caption(
+        "Enlarged view of Andaman and Nicobar Islands and Lakshadweep. "
+        "Their positions are not to the same scale as the mainland map."
+    )
 
-        if missing_regions:
-            with st.expander(
-                f"Regions missing from the boundary file ({len(missing_regions)})"
-            ):
-                st.write(", ".join(missing_regions))
-                st.caption(
-                    "These regions cannot be shown until the "
-                    "boundary source or its name matching is corrected."
-                )
+    island_fig, _ = make_map(
+        geojson,
+        dataset,
+        selected_indicator,
+        selected_region,
+        island_map=True,
+    )
 
-    st.subheader("About this map")
+    st.plotly_chart(
+        island_fig,
+        use_container_width=True,
+        config={"displayModeBar": True, "scrollZoom": True},
+    )
 
-    st.write(
-        "This atlas is designed to compare development outcomes "
-        "across Indian regions. The map currently provides the "
-        "geographic framework. Official indicator data must be "
-        "added and documented before meaningful comparisons can "
-        "be made."
+    if not has_data:
+        st.info(
+            "No indicator values have been loaded yet. "
+            "The map currently shows boundaries only, not development scores."
+        )
+
+    st.download_button(
+        "Download data template (CSV)",
+        data=create_empty_dataset().to_csv(index=False).encode("utf-8"),
+        file_name="india_development_atlas_template.csv",
+        mime="text/csv",
     )
 
 
-# ---------------------------------------------------------
-# PAGE 2: EXPLORE A REGION
-# ---------------------------------------------------------
+# ============================================================
+# EXPLORE A REGION
+# ============================================================
 
 elif page == "Explore a Region":
-
-    st.title("Explore a Region")
+    st.header("Explore a Region")
 
     selected_region = st.selectbox(
-        "Choose a state or union territory",
+        "Choose a state or Union Territory",
         REGIONS,
     )
 
-    region_row = dataset.loc[
+    region_data = dataset[
         dataset["Region"] == selected_region
-    ].iloc[0]
+    ].copy()
 
     st.subheader(selected_region)
 
-    if geojson and selected_region not in matched_regions:
-        st.warning(
-            "This region is in the atlas list but was not matched "
-            "to the current geographic boundary file."
-        )
-
-    st.markdown("### Development indicators")
-
-    cols = st.columns(3)
-
-    display_indicators = [
-        "Overall development score",
-        "Multidimensional poverty",
-        "Literacy rate",
-        "Per-capita income",
-        "Unemployment rate",
-    ]
-
-    for index, indicator in enumerate(display_indicators):
-        column = INDICATORS[indicator]["column"]
-        value = region_row[column]
-
-        cols[index % 3].metric(
-            indicator,
-            format_value(value, indicator),
-        )
-
-    st.markdown("### Available information")
-
-    st.write(
-        "Once official datasets are connected, this page will "
-        "show the selected region's indicator values, source, "
-        "year, and comparisons with national figures."
+    region_type = (
+        "Union Territory"
+        if selected_region in UT_REGIONS
+        else "State"
     )
 
-    st.dataframe(
-        pd.DataFrame({
-            "Indicator": display_indicators,
-            "Value": [
-                format_value(
-                    region_row[INDICATORS[indicator]["column"]],
-                    indicator,
-                )
-                for indicator in display_indicators
-            ],
-        }),
-        use_container_width=True,
-        hide_index=True,
+    st.write(f"Administrative category: **{region_type}**")
+
+    if region_data.empty:
+        st.info("No observations are available for this region yet.")
+    else:
+        latest = region_data.iloc[-1]
+
+        for indicator_name, details in INDICATORS.items():
+            column = details["column"]
+            value = pd.to_numeric(
+                pd.Series([latest.get(column)]),
+                errors="coerce",
+            ).iloc[0]
+
+            if pd.isna(value):
+                st.metric(indicator_name, "No data")
+            else:
+                suffix = details["unit"]
+                formatted_value = f"{value:,.2f} {suffix}"
+                st.metric(indicator_name, formatted_value)
+
+        st.subheader("Available observations")
+        st.dataframe(
+            region_data,
+            use_container_width=True,
+            hide_index=True,
+        )
+
+    fig, _ = make_map(
+        geojson,
+        dataset,
+        list(INDICATORS.keys())[0],
+        selected_region,
+        island_map=selected_region in ISLAND_REGIONS,
     )
 
+    st.plotly_chart(fig, use_container_width=True)
 
-# ---------------------------------------------------------
-# PAGE 3: COMPARE REGIONS
-# ---------------------------------------------------------
+
+# ============================================================
+# COMPARE REGIONS
+# ============================================================
 
 elif page == "Compare Regions":
-
-    st.title("Compare Regions")
-
+    st.header("Compare Regions")
     st.write(
-        "Select regions to compare their development indicators."
+        "Compare available indicator values across multiple states "
+        "and Union Territories."
     )
 
     selected_regions = st.multiselect(
-        "Choose regions",
+        "Select regions",
         REGIONS,
         default=["Karnataka", "Tamil Nadu", "Kerala"],
     )
@@ -758,215 +887,227 @@ elif page == "Compare Regions":
         key="comparison_indicator",
     )
 
-    column = INDICATORS[selected_indicator]["column"]
+    indicator_column = INDICATORS[selected_indicator]["column"]
 
     comparison = dataset[
         dataset["Region"].isin(selected_regions)
-    ][["Region", column, "Data_Year", "Data_Source"]].copy()
+    ].copy()
 
-    comparison = comparison.rename(
-        columns={
-            column: selected_indicator,
-            "Data_Year": "Data year",
-            "Data_Source": "Data source",
-        }
-    )
+    if not comparison.empty:
+        comparison[indicator_column] = pd.to_numeric(
+            comparison[indicator_column],
+            errors="coerce",
+        )
 
-    if comparison.empty:
-        st.info("Select at least one region to display a comparison.")
+        if "Year" in comparison.columns:
+            comparison["_year_sort"] = pd.to_numeric(
+                comparison["Year"], errors="coerce"
+            )
+            comparison = comparison.sort_values("_year_sort")
 
-    else:
+        comparison = comparison.drop_duplicates(
+            "Region", keep="last"
+        )
+
+        comparison = comparison[
+            ["Region", "Region_Type", "Year", indicator_column, "Source"]
+        ]
+
+        comparison = comparison.rename(
+            columns={indicator_column: selected_indicator}
+        )
+
         st.dataframe(
             comparison,
             use_container_width=True,
             hide_index=True,
         )
 
-        if comparison[selected_indicator].notna().any():
-            ranked = comparison.dropna(
-                subset=[selected_indicator]
-            ).sort_values(
-                selected_indicator,
-                ascending=False,
+        chart_data = comparison.dropna(
+            subset=[selected_indicator]
+        )
+
+        if not chart_data.empty:
+            fig = go.Figure(
+                data=[
+                    go.Bar(
+                        x=chart_data["Region"],
+                        y=chart_data[selected_indicator],
+                        marker_color="#2563eb",
+                    )
+                ]
             )
 
-            st.subheader("Comparison chart")
-
-            chart = go.Figure(
-                go.Bar(
-                    x=ranked["Region"],
-                    y=ranked[selected_indicator],
-                    text=ranked[selected_indicator],
-                    textposition="auto",
-                )
-            )
-
-            chart.update_layout(
+            fig.update_layout(
+                title=selected_indicator,
                 xaxis_title="Region",
                 yaxis_title=INDICATORS[selected_indicator]["unit"],
-                height=420,
-                margin={"l": 10, "r": 10, "t": 20, "b": 10},
+                height=450,
+                margin={"l": 20, "r": 20, "t": 60, "b": 100},
             )
 
-            st.plotly_chart(
-                chart,
-                use_container_width=True,
-            )
-
+            st.plotly_chart(fig, use_container_width=True)
         else:
             st.info(
-                "No indicator values are available to plot yet. "
-                "Connect an official dataset to enable rankings "
-                "and comparison charts."
+                "There are no numerical observations for this indicator "
+                "yet. Upload sourced data to generate a comparison chart."
             )
+    else:
+        st.info("Select at least one region to compare.")
 
 
-# ---------------------------------------------------------
-# PAGE 4: DATA EXPLORER
-# ---------------------------------------------------------
+# ============================================================
+# DATA EXPLORER
+# ============================================================
 
 elif page == "Data Explorer":
-
-    st.title("Data Explorer")
+    st.header("Data Explorer")
 
     st.write(
-        "View the region-level dataset and download a CSV template."
+        "Upload a CSV containing state or Union Territory observations. "
+        "The column names in the template should be preserved."
     )
 
-    st.caption(
-        "The current indicator columns are intentionally blank. "
-        "They are placeholders, not official statistics."
-    )
-
-    search_text = st.text_input(
-        "Search for a region",
-        placeholder="For example, Karnataka",
-    )
-
-    filtered_data = dataset.copy()
-
-    if search_text.strip():
-        filtered_data = filtered_data[
-            filtered_data["Region"].str.contains(
-                search_text.strip(),
-                case=False,
-                na=False,
-            )
-        ]
-
-    st.dataframe(
-        filtered_data,
-        use_container_width=True,
-        hide_index=True,
-    )
-
-    csv_data = dataset.to_csv(index=False).encode("utf-8")
+    template = create_empty_dataset()
 
     st.download_button(
-        label="Download dataset template (CSV)",
-        data=csv_data,
+        "Download blank CSV template",
+        data=template.to_csv(index=False).encode("utf-8"),
         file_name="india_development_atlas_template.csv",
         mime="text/csv",
     )
 
+    uploaded_file = st.file_uploader(
+        "Upload your completed CSV",
+        type=["csv"],
+    )
 
-# ---------------------------------------------------------
-# PAGE 5: ABOUT & SOURCES
-# ---------------------------------------------------------
+    if uploaded_file is not None:
+        try:
+            uploaded_df = pd.read_csv(uploaded_file)
+            uploaded_df = validate_dataset(uploaded_df)
+
+            st.session_state["uploaded_dataset"] = uploaded_df
+
+            st.success(
+                f"Loaded {len(uploaded_df)} observation rows. "
+                "The data is now being used in this app session."
+            )
+
+            st.dataframe(
+                uploaded_df,
+                use_container_width=True,
+                hide_index=True,
+            )
+
+            st.caption(
+                "Check units, reference years, definitions and sources "
+                "before interpreting or publishing results."
+            )
+
+        except Exception as error:
+            st.error("The CSV could not be read.")
+            st.code(str(error))
+
+    current_dataset = get_dataset()
+
+    st.subheader("Current dataset")
+    st.write(f"Rows: {len(current_dataset)}")
+    st.write(f"Columns: {len(current_dataset.columns)}")
+
+    st.dataframe(
+        current_dataset,
+        use_container_width=True,
+        hide_index=True,
+    )
+
+    csv_bytes = current_dataset.to_csv(index=False).encode("utf-8")
+
+    st.download_button(
+        "Download current dataset",
+        data=csv_bytes,
+        file_name="india_development_atlas_data.csv",
+        mime="text/csv",
+    )
+
+
+# ============================================================
+# ABOUT AND SOURCES
+# ============================================================
 
 elif page == "About & Sources":
-
-    st.title("About the India Development Atlas")
+    st.header("About the India Development Atlas")
 
     st.write(
         """
-        The India Development Atlas is an interactive project for
-        exploring regional differences in socioeconomic development
-        across India's states and union territories.
+        The India Development Atlas is designed to make regional
+        socioeconomic differences easier to explore and compare.
 
-        Its aim is to bring together comparable indicators on
-        poverty, education, income, employment and other dimensions
-        of development in one accessible platform.
+        Its purpose is to combine state-level indicators, transparent
+        sources, and simple visualisations in one place.
         """
     )
 
-    st.subheader("Geographic data")
+    st.subheader("Data integrity")
 
-    st.markdown(
-        f"[Open the boundary GeoJSON]({GEOJSON_URL})"
+    st.write(
+        """
+        The application does not treat missing values as zero and does
+        not invent regional development scores. Every published value
+        should be accompanied by a source, reference year, unit and
+        indicator definition.
+        """
     )
 
-    if not map_error:
-        st.write(
-            f"Detected region-name property: `{detected_name_key}`"
-        )
-        st.write(
-            f"Matched features: {len(matched_regions)}"
-        )
-        st.write(
-            f"Skipped features: {skipped_features}"
-        )
-
-        if missing_regions:
-            st.write("Unmatched regions:")
-            st.write(", ".join(missing_regions))
-
-    st.subheader("Potential indicator sources")
+    st.subheader("Potential official data sources")
 
     sources = [
         (
-            "NITI Aayog",
-            "Multidimensional poverty and development reports",
-            "https://www.niti.gov.in/",
+            "NITI Aayog: National Multidimensional Poverty Index",
+            "https://www.niti.gov.in/node/868",
         ),
         (
             "Census of India",
-            "Population, literacy and demographic indicators",
             "https://censusindia.gov.in/census.website/en/data",
         ),
         (
-            "Reserve Bank of India",
-            "State finances, income and economic statistics",
-            "https://www.rbi.org.in/",
+            "Reserve Bank of India: Publications",
+            "https://www.rbi.org.in/Scripts/PublicationsView.aspx?id=20658",
         ),
         (
-            "UDISE+",
-            "School education statistics",
+            "UDISE+ school education data",
             "https://www.udiseplus.gov.in/",
         ),
         (
-            "Open Government Data Platform",
-            "Government datasets across sectors",
+            "Open Government Data Platform India",
             "https://www.data.gov.in/",
+        ),
+        (
+            "GeoJSON boundary repository",
+            "https://github.com/iamaanahmad/GeoJson-of-Indian-States",
         ),
     ]
 
-    for source_name, description, url in sources:
-        st.markdown(
-            f"- **[{source_name}]({url})**: {description}"
-        )
+    for label, url in sources:
+        st.markdown(f"- [{label}]({url})")
 
-    st.subheader("Methodology and limitations")
+    st.subheader("Map coverage")
 
     st.write(
-        """
-        Indicator values should only be added after checking their
-        source, definition, reference year, geographic coverage and
-        units. State comparisons can be misleading when indicators
-        come from different years or use inconsistent definitions.
-
-        The current app does not calculate a composite development
-        score and does not infer missing observations.
-        """
+        f"Matched regions: {len(matched_regions)} out of {len(REGIONS)}"
     )
 
+    if missing_regions:
+        st.warning(
+            "The following regions were not matched in the GeoJSON: "
+            + ", ".join(missing_regions)
+        )
+    else:
+        st.success(
+            "All 28 states and 8 Union Territories were matched by name."
+        )
 
-# ---------------------------------------------------------
-# FOOTER
-# ---------------------------------------------------------
-
-st.divider()
-
-st.caption(
-    "India Development Atlas | An independent data exploration project"
-)
+    st.caption(
+        "Boundary coverage and legal accuracy should be independently "
+        "verified before the map is used for official or policy purposes."
+    )
