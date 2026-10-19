@@ -721,12 +721,13 @@ elif page == "Explore a Region":
 # PAGE 3: COMPARE REGIONS
 # ============================================================
 
+
+# ============================================================
+# PAGE 3: COMPARE REGIONS
+# ============================================================
+
 elif page == "Compare Regions":
     st.header("Compare Regions")
-    st.write(
-        "Compare available indicator values across states and "
-        "Union Territories."
-    )
 
     selected_regions = st.multiselect(
         "Choose regions",
@@ -739,36 +740,31 @@ elif page == "Compare Regions":
         list(INDICATORS.keys()),
         key="comparison_indicator",
     )
+
     indicator_column = INDICATORS[selected_indicator]["column"]
 
     comparison = dataset[
         dataset["Region"].isin(selected_regions)
     ].copy()
 
-    if comparison.empty or not selected_regions:
-        st.info("Select one or more regions to compare.")
-    else:
+    if not comparison.empty:
+        comparison["Year"] = pd.to_numeric(
+            comparison["Year"], errors="coerce"
+        )
         comparison[indicator_column] = pd.to_numeric(
             comparison[indicator_column], errors="coerce"
         )
-        comparison["_year"] = pd.to_numeric(
-            comparison["Year"], errors="coerce"
-        )
-        comparison = comparison.dropna(subset=["_year"])
-        comparison = comparison.sort_values("_year")
+
+        comparison = comparison.dropna(subset=["Year"])
+        comparison = comparison.sort_values("Year")
         comparison = comparison.drop_duplicates("Region", keep="last")
 
-        display_columns = [
-            "Region", "Region_Type", "Year", indicator_column, "Source"
-        ]
-        comparison_display = comparison[display_columns].rename(
-            columns={indicator_column: selected_indicator}
-        )
-        st.dataframe(
-            comparison_display,
-            use_container_width=True,
-            hide_index=True,
-        )
+        display = comparison[
+            ["Region", "Region_Type", "Year", indicator_column, "Source"]
+        ].rename(columns={indicator_column: selected_indicator})
+
+        st.subheader("Latest available indicator values")
+        st.dataframe(display, use_container_width=True, hide_index=True)
 
         chart_data = comparison.dropna(subset=[indicator_column])
 
@@ -776,7 +772,6 @@ elif page == "Compare Regions":
             fig = go.Figure(go.Bar(
                 x=chart_data["Region"],
                 y=chart_data[indicator_column],
-                marker_color="#2563eb",
                 text=chart_data[indicator_column].map(lambda x: f"{x:.2f}"),
                 textposition="outside",
                 cliponaxis=False,
@@ -785,21 +780,252 @@ elif page == "Compare Regions":
                 title=selected_indicator,
                 xaxis_title="Region",
                 yaxis_title=INDICATORS[selected_indicator]["unit"],
+                template="plotly_white",
                 height=450,
                 margin={"l": 30, "r": 60, "t": 60, "b": 100},
             )
             st.plotly_chart(fig, use_container_width=True)
+    else:
+        st.info("Select one or more regions to compare.")
+
+    # --------------------------------------------------------
+    # MPI POVERTY REDUCTION ANALYSIS
+    # --------------------------------------------------------
+
+    st.divider()
+    st.header("Multidimensional Poverty: Change Over Time")
+    st.caption(
+        "Source: NITI Aayog, India National Multidimensional Poverty "
+        "Index: A Progress Review 2023. NFHS-4 covers 2015–16; "
+        "NFHS-5 covers 2019–21. These are survey periods, not annual estimates."
+    )
+
+    mpi_col = "Multidimensional_Poverty_Percent"
+    mpi_data = dataset.copy()
+
+    mpi_data["Year"] = pd.to_numeric(mpi_data["Year"], errors="coerce")
+    mpi_data[mpi_col] = pd.to_numeric(
+        mpi_data[mpi_col], errors="coerce"
+    )
+
+    mpi_data = mpi_data[
+        mpi_data["Year"].isin([2016, 2021])
+    ].dropna(subset=["Region", "Year", mpi_col])
+
+    if mpi_data.empty:
+        st.warning(
+            "The current dataset has no usable MPI survey-period data. "
+            "In Data Explorer, remove any uploaded CSV to return to the "
+            "default GitHub dataset."
+        )
+    else:
+        mpi = mpi_data.pivot_table(
+            index="Region",
+            columns="Year",
+            values=mpi_col,
+            aggfunc="first",
+        ).reset_index()
+
+        mpi = mpi.rename(columns={
+            2016: "MPI_Poverty_2015_16",
+            2021: "MPI_Poverty_2019_21",
+        })
+
+        required = ["MPI_Poverty_2015_16", "MPI_Poverty_2019_21"]
+
+        if not all(col in mpi.columns for col in required):
+            st.warning("Both survey periods are needed for this comparison.")
         else:
-            st.info(
-                "No numerical values are available for this indicator. "
-                "Upload sourced observations to create a comparison chart."
+            mpi = mpi.dropna(subset=required).copy()
+
+            mpi["Region_Type"] = mpi["Region"].apply(
+                lambda r: "Union Territory" if r in UT_REGIONS else "State"
             )
 
-        if selected_indicator == "Multidimensional poverty (%)":
-            st.caption(
-                "The latest row uses 2021 as a sortable label for the "
-                "NFHS-5 survey period 2019–21, not a single-year estimate."
+            mpi["Reduction_Percentage_Points"] = (
+                mpi["MPI_Poverty_2015_16"] -
+                mpi["MPI_Poverty_2019_21"]
             )
+
+            mpi["Relative_Reduction_Percent"] = (
+                mpi["Reduction_Percentage_Points"] /
+                mpi["MPI_Poverty_2015_16"].replace(0, float("nan"))
+            ) * 100
+
+            # 1. Summary metrics
+            ranked = mpi.sort_values(
+                "Reduction_Percentage_Points",
+                ascending=False,
+            ).reset_index(drop=True)
+
+            ranked.insert(0, "Rank", ranked.index + 1)
+
+            largest = ranked.iloc[0]
+            lowest_final = mpi.loc[
+                mpi["MPI_Poverty_2019_21"].idxmin()
+            ]
+
+            c1, c2, c3 = st.columns(3)
+            c1.metric("Regions compared", f"{len(mpi)} / 36")
+            c2.metric(
+                "Largest reduction",
+                f"{largest['Reduction_Percentage_Points']:.2f} pp",
+                largest["Region"],
+            )
+            c3.metric(
+                "Lowest poverty in 2019–21",
+                f"{lowest_final['MPI_Poverty_2019_21']:.2f}%",
+                lowest_final["Region"],
+            )
+
+            # 2. Full ranking table
+            st.subheader("1. Poverty reduction rankings")
+
+            ranking_display = ranked[[
+                "Rank",
+                "Region",
+                "Region_Type",
+                "MPI_Poverty_2015_16",
+                "MPI_Poverty_2019_21",
+                "Reduction_Percentage_Points",
+                "Relative_Reduction_Percent",
+            ]].rename(columns={
+                "MPI_Poverty_2015_16": "Poverty 2015–16 (%)",
+                "MPI_Poverty_2019_21": "Poverty 2019–21 (%)",
+                "Reduction_Percentage_Points": "Reduction (percentage points)",
+                "Relative_Reduction_Percent": "Relative reduction (%)",
+            })
+
+            st.dataframe(
+                ranking_display.round(2),
+                use_container_width=True,
+                hide_index=True,
+            )
+
+            st.download_button(
+                "Download MPI rankings as CSV",
+                data=ranking_display.round(2).to_csv(index=False).encode("utf-8"),
+                file_name="india_mpi_poverty_reduction_rankings.csv",
+                mime="text/csv",
+            )
+
+            # 3. Chart: largest reductions
+            st.subheader("2. Ten largest poverty reductions")
+
+            top10 = ranked.head(10).sort_values(
+                "Reduction_Percentage_Points",
+                ascending=True,
+            )
+
+            fig = go.Figure(go.Bar(
+                x=top10["Reduction_Percentage_Points"],
+                y=top10["Region"],
+                orientation="h",
+                text=top10["Reduction_Percentage_Points"].map(
+                    lambda x: f"{x:.2f} pp"
+                ),
+                textposition="outside",
+                cliponaxis=False,
+                hovertemplate=(
+                    "<b>%{y}</b><br>"
+                    "Reduction: %{x:.2f} percentage points"
+                    "<extra></extra>"
+                ),
+            ))
+
+            fig.update_layout(
+                title="Largest Reductions in MPI Poverty, 2015–16 to 2019–21",
+                xaxis_title="Reduction (percentage points)",
+                yaxis_title="",
+                template="plotly_white",
+                height=500,
+                margin={"l": 190, "r": 100, "t": 80, "b": 60},
+            )
+
+            st.plotly_chart(fig, use_container_width=True)
+
+            # 4. Before-and-after chart
+            st.subheader("3. Compare survey periods")
+
+            defaults = [
+                r for r in ["Bihar", "Karnataka", "Tamil Nadu"]
+                if r in set(mpi["Region"])
+            ]
+
+            chosen = st.multiselect(
+                "Choose regions for the before-and-after chart",
+                options=sorted(mpi["Region"].tolist()),
+                default=defaults,
+                key="mpi_period_regions",
+            )
+
+            period = mpi[mpi["Region"].isin(chosen)].copy()
+
+            if not period.empty:
+                period = period.sort_values(
+                    "MPI_Poverty_2019_21", ascending=False
+                )
+
+                fig = go.Figure()
+
+                fig.add_trace(go.Bar(
+                    y=period["Region"],
+                    x=period["MPI_Poverty_2015_16"],
+                    name="NFHS-4 (2015–16)",
+                    orientation="h",
+                    text=period["MPI_Poverty_2015_16"].map(
+                        lambda x: f"{x:.2f}%"
+                    ),
+                    textposition="outside",
+                    cliponaxis=False,
+                ))
+
+                fig.add_trace(go.Bar(
+                    y=period["Region"],
+                    x=period["MPI_Poverty_2019_21"],
+                    name="NFHS-5 (2019–21)",
+                    orientation="h",
+                    text=period["MPI_Poverty_2019_21"].map(
+                        lambda x: f"{x:.2f}%"
+                    ),
+                    textposition="outside",
+                    cliponaxis=False,
+                ))
+
+                max_value = period[required].max().max()
+
+                fig.update_layout(
+                    title="MPI Poverty Rates by Survey Period",
+                    xaxis_title="Population in multidimensional poverty (%)",
+                    yaxis_title="",
+                    barmode="group",
+                    template="plotly_white",
+                    height=max(380, 100 + 55 * len(period)),
+                    margin={"l": 180, "r": 100, "t": 80, "b": 100},
+                    legend={
+                        "title": "Survey period",
+                        "orientation": "h",
+                        "yanchor": "top",
+                        "y": -0.18,
+                        "xanchor": "center",
+                        "x": 0.5,
+                    },
+                )
+
+                fig.update_xaxes(
+                    range=[0, max(10, float(max_value) * 1.25)]
+                )
+
+                st.plotly_chart(fig, use_container_width=True)
+
+            st.caption(
+                "Percentage-point reduction = initial rate minus final rate. "
+                "Relative reduction is a separate measure calculated as "
+                "(initial rate − final rate) / initial rate × 100. "
+                "A smaller reduction does not automatically mean worse "
+                "performance, because regions started at different poverty levels."
+            )
+
 
 
 # ============================================================
