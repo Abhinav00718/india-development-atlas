@@ -26,11 +26,13 @@ st.set_page_config(
 # ============================================================
 
 
+
 GEOJSON_URL = (
     "https://raw.githubusercontent.com/"
-    "iamaanahmad/GeoJson-of-Indian-States/"
-    "master/indian-states.geojson"
+    "Abhinav00718/india-development-atlas/"
+    "main/india_states_ut_simplified.geojson"
 )
+
 
 
 CACHE_VERSION = "1"
