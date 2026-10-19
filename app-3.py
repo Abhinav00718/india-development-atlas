@@ -160,7 +160,7 @@ df["atlas_region"] = df["Region"].apply(normalise_name)
 GEOJSON_URL = (
     "https://raw.githubusercontent.com/"
     "iamaanahmad/GeoJson-of-Indian-States/"
-    "main/indian-states.geojson"
+    "master/indian-states.geojson"
 )
 
 
