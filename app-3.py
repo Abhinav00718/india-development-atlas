@@ -1,5 +1,4 @@
 
-
 import streamlit as st
 import pandas as pd
 import plotly.express as px
@@ -26,12 +25,12 @@ st.markdown(
 )
 
 st.caption(
-    "Data status: Official indicator data has not yet been connected. "
+    "Official indicator data has not yet been connected. "
     "N/A values are intentional."
 )
 
 # --------------------------------------------------
-# REGIONS
+# STATES AND UNION TERRITORIES
 # --------------------------------------------------
 
 STATES = [
@@ -78,25 +77,6 @@ UNION_TERRITORIES = [
 
 ALL_REGIONS = STATES + UNION_TERRITORIES
 
-# --------------------------------------------------
-# DATASET
-# --------------------------------------------------
-# These values remain None until verified official data
-# is connected. Do not replace them with invented scores.
-
-df = pd.DataFrame(
-    {
-        "Region": ALL_REGIONS,
-        "Type": [
-            "State" if region in STATES else "Union Territory"
-            for region in ALL_REGIONS
-        ],
-        "Development Score": [None] * len(ALL_REGIONS),
-        "Education Score": [None] * len(ALL_REGIONS),
-        "Healthcare Score": [None] * len(ALL_REGIONS),
-    }
-)
-
 INDICATORS = [
     "Development Score",
     "Education Score",
@@ -104,23 +84,36 @@ INDICATORS = [
 ]
 
 # --------------------------------------------------
+# DATASET
+# --------------------------------------------------
+
+df = pd.DataFrame({
+    "Region": ALL_REGIONS,
+    "Type": [
+        "State" if region in STATES else "Union Territory"
+        for region in ALL_REGIONS
+    ],
+    "Development Score": [None] * len(ALL_REGIONS),
+    "Education Score": [None] * len(ALL_REGIONS),
+    "Healthcare Score": [None] * len(ALL_REGIONS),
+})
+
+# --------------------------------------------------
 # NORMALISE REGION NAMES
 # --------------------------------------------------
 
 def normalise_name(name):
-    """Standardise region names to improve GeoJSON matching."""
+    """Standardise names to improve map-to-data matching."""
 
     if name is None:
         return ""
 
     name = str(name).strip()
 
-    # Remove accents and diacritics.
     name = unicodedata.normalize("NFKD", name)
     name = "".join(
-        character
-        for character in name
-        if not unicodedata.combining(character)
+        char for char in name
+        if not unicodedata.combining(char)
     )
 
     name = name.lower()
@@ -135,7 +128,6 @@ def normalise_name(name):
         "nct of delhi": "delhi",
         "national capital territory of delhi": "delhi",
         "new delhi": "delhi",
-        "jammu and kashmir": "jammu and kashmir",
         "andaman and nicobar": "andaman and nicobar islands",
         "andaman nicobar islands": "andaman and nicobar islands",
         "dadra and nagar haveli": (
@@ -157,56 +149,38 @@ df["atlas_region"] = df["Region"].apply(normalise_name)
 # --------------------------------------------------
 # GEOJSON SOURCE
 # --------------------------------------------------
+# This simplified source is intended for web mapping.
+# Its documented coverage is 32 regions, not all 36 UT/state units.
 
 GEOJSON_URL = (
     "https://raw.githubusercontent.com/"
-    "udit-001/india-maps-data/main/geojson/india.geojson"
+    "AbhinavSwami28/india-official-geojson/"
+    "main/india-states-simplified.geojson"
 )
 
 
 @st.cache_data(ttl=86400)
 def load_geojson():
-    """Download GeoJSON and identify its region-name property."""
+    """Download GeoJSON and standardise region names."""
 
-    response = requests.get(
-        GEOJSON_URL,
-        timeout=30,
-    )
+    response = requests.get(GEOJSON_URL, timeout=45)
     response.raise_for_status()
 
     geojson = response.json()
 
     if geojson.get("type") != "FeatureCollection":
         raise ValueError(
-            "The map file is not a GeoJSON FeatureCollection."
+            "The map source is not a GeoJSON FeatureCollection."
         )
 
     features = geojson.get("features", [])
 
     if not features:
         raise ValueError(
-            "The GeoJSON file contains no map features."
+            "The GeoJSON file contains no features."
         )
 
-    # Candidate property names, in preferred order.
-    possible_keys = [
-        "ST_NM",
-        "shapeName",
-        "NAME_1",
-        "st_nm",
-        "state_name",
-        "State_Name",
-        "state",
-        "State",
-        "name",
-        "NAME",
-        "NAME_0",
-        "admin",
-        "region",
-        "dtname",
-    ]
-
-    # Search properties across all features, not only the first.
+    # Search across every feature for available property names.
     all_keys = set()
 
     for feature in features:
@@ -214,31 +188,39 @@ def load_geojson():
             feature.get("properties", {}).keys()
         )
 
+    possible_keys = [
+        "shapeName",
+        "ST_NM",
+        "state_name",
+        "State_Name",
+        "st_nm",
+        "NAME_1",
+        "state",
+        "State",
+        "name",
+        "NAME",
+        "admin",
+        "region",
+    ]
+
     name_key = next(
-        (
-            key
-            for key in possible_keys
-            if key in all_keys
-        ),
+        (key for key in possible_keys if key in all_keys),
         None,
     )
 
     if name_key is None:
         raise ValueError(
-            "No recognised region-name field was found. "
+            "Could not identify the region-name property. "
             f"Available properties: {sorted(all_keys)}"
         )
 
-    # Add a standardised field for Plotly.
     for feature in features:
         properties = feature.setdefault("properties", {})
         source_name = properties.get(name_key)
 
-        properties["atlas_region"] = normalise_name(
-            source_name
-        )
+        properties["atlas_region"] = normalise_name(source_name)
 
-    return geojson
+    return geojson, name_key
 
 
 # --------------------------------------------------
@@ -252,24 +234,20 @@ selected_indicator = st.sidebar.selectbox(
     INDICATORS,
 )
 
-st.sidebar.markdown("---")
+st.sidebar.divider()
+
 st.sidebar.markdown("### About this atlas")
 st.sidebar.write(
-    "This project aims to make regional development "
-    "patterns in India easier to explore and compare."
+    "An interactive project for exploring regional "
+    "development and inequality across India."
 )
 
 st.sidebar.markdown("### Planned data sources")
+
 st.sidebar.markdown(
-    "- [NITI Aayog](https://www.niti.gov.in/)"
-)
-st.sidebar.markdown(
-    "- [RBI State Statistics](https://www.rbi.org.in/)"
-)
-st.sidebar.markdown(
-    "- [Census of India](https://censusindia.gov.in/)"
-)
-st.sidebar.markdown(
+    "- [NITI Aayog](https://www.niti.gov.in/)\n"
+    "- [RBI State Statistics](https://www.rbi.org.in/)\n"
+    "- [Census of India](https://censusindia.gov.in/)\n"
     "- [UDISE+](https://www.udiseplus.gov.in/)"
 )
 
@@ -279,20 +257,9 @@ st.sidebar.markdown(
 
 col1, col2, col3 = st.columns(3)
 
-col1.metric(
-    "States",
-    len(STATES),
-)
-
-col2.metric(
-    "Union Territories",
-    len(UNION_TERRITORIES),
-)
-
-col3.metric(
-    "Regions in Atlas",
-    len(ALL_REGIONS),
-)
+col1.metric("States", len(STATES))
+col2.metric("Union Territories", len(UNION_TERRITORIES))
+col3.metric("Regions in Atlas", len(ALL_REGIONS))
 
 st.divider()
 
@@ -301,57 +268,42 @@ st.divider()
 # --------------------------------------------------
 
 st.subheader("Development Map")
-
-st.write(
-    f"Selected indicator: **{selected_indicator}**"
-)
+st.write(f"Selected indicator: **{selected_indicator}**")
 
 try:
-    geojson = load_geojson()
+    geojson, detected_name_key = load_geojson()
 
-    # Match the GeoJSON regions against our dataset.
     geojson_names = {
         feature.get("properties", {}).get("atlas_region", "")
         for feature in geojson.get("features", [])
     }
 
     dataset_names = set(df["atlas_region"])
-
     matched_regions = geojson_names.intersection(dataset_names)
-
-    if not matched_regions:
-        st.warning(
-            "The map loaded, but none of its region names matched "
-            "the atlas dataset. The GeoJSON may use different "
-            "state names or may contain district boundaries instead."
-        )
-
-        st.caption(
-            "GeoJSON region-name examples: "
-            + ", ".join(sorted(name for name in geojson_names if name)[:15])
-        )
 
     map_df = df[
         df["atlas_region"].isin(geojson_names)
     ].copy()
 
-    if map_df.empty:
+    if not matched_regions:
         st.warning(
-            "No atlas regions matched the map boundaries."
+            "The GeoJSON loaded, but its region names did not match "
+            "the atlas dataset."
         )
-    elif map_df[selected_indicator].notna().sum() == 0:
-        st.info(
-            "The map boundaries loaded, but the selected indicator "
-            "does not have data yet. Add verified official values "
-            "to colour the map."
+        st.caption(
+            "Example GeoJSON names: "
+            + ", ".join(
+                sorted(name for name in geojson_names if name)[:15]
+            )
         )
 
+    elif map_df[selected_indicator].notna().sum() == 0:
+        # Show boundaries even before indicator data is available.
         fig = px.choropleth(
             map_df,
             geojson=geojson,
             locations="atlas_region",
             featureidkey="properties.atlas_region",
-            color=None,
             hover_name="Region",
             hover_data={
                 "Type": True,
@@ -366,13 +318,8 @@ try:
         )
 
         fig.update_layout(
-            height=650,
-            margin={
-                "r": 0,
-                "t": 50,
-                "l": 0,
-                "b": 0,
-            },
+            height=680,
+            margin=dict(l=0, r=0, t=50, b=0),
         )
 
         st.plotly_chart(
@@ -380,20 +327,29 @@ try:
             use_container_width=True,
         )
 
+        st.info(
+            "The boundaries are displayed without indicator shading "
+            "because verified scores have not been added yet."
+        )
+
     else:
+        available_df = map_df.dropna(
+            subset=[selected_indicator]
+        )
+
         fig = px.choropleth(
-            map_df.dropna(subset=[selected_indicator]),
+            available_df,
             geojson=geojson,
             locations="atlas_region",
             featureidkey="properties.atlas_region",
             color=selected_indicator,
+            color_continuous_scale="YlGnBu",
             hover_name="Region",
             hover_data={
                 "Type": True,
                 selected_indicator: True,
                 "atlas_region": False,
             },
-            color_continuous_scale="YlGnBu",
             title=f"India: {selected_indicator}",
         )
 
@@ -403,13 +359,8 @@ try:
         )
 
         fig.update_layout(
-            height=650,
-            margin={
-                "r": 0,
-                "t": 50,
-                "l": 0,
-                "b": 0,
-            },
+            height=680,
+            margin=dict(l=0, r=0, t=50, b=0),
         )
 
         st.plotly_chart(
@@ -417,19 +368,21 @@ try:
             use_container_width=True,
         )
 
-    unmatched_regions = sorted(
-        dataset_names - geojson_names
-    )
+    unmatched_regions = sorted(dataset_names - geojson_names)
 
     if unmatched_regions:
-        with st.expander("Regions not matched to map boundaries"):
-            st.write(
-                [
-                    region
-                    for region in ALL_REGIONS
-                    if normalise_name(region) in unmatched_regions
-                ]
-            )
+        with st.expander("Regions not included in this map source"):
+            st.write([
+                region
+                for region in ALL_REGIONS
+                if normalise_name(region) in unmatched_regions
+            ])
+
+    st.caption(
+        f"Map source property detected: {detected_name_key}. "
+        f"Matched {len(matched_regions)} of {len(ALL_REGIONS)} "
+        "atlas regions."
+    )
 
 except Exception as error:
     st.error(
@@ -442,7 +395,7 @@ except Exception as error:
 
     st.info(
         "The region explorer, comparison tool, and dataset table "
-        "can still be used while the map source is being fixed."
+        "remain available even if the map fails."
     )
 
 # --------------------------------------------------
@@ -457,9 +410,7 @@ selected_region = st.selectbox(
     ALL_REGIONS,
 )
 
-region_data = df[
-    df["Region"] == selected_region
-].iloc[0]
+region_data = df[df["Region"] == selected_region].iloc[0]
 
 st.markdown(f"### {selected_region}")
 
@@ -472,18 +423,13 @@ for column, indicator in zip(
     value = region_data[indicator]
 
     display_value = (
-        "N/A"
-        if pd.isna(value)
-        else f"{value:.1f}"
+        "N/A" if pd.isna(value) else f"{value:.1f}"
     )
 
-    column.metric(
-        indicator,
-        display_value,
-    )
+    column.metric(indicator, display_value)
 
 st.caption(
-    "N/A means a verified value has not been added yet. "
+    "N/A means verified data has not been added. "
     "It does not mean the region scored zero."
 )
 
@@ -518,9 +464,8 @@ if comparison_regions:
 
     if available_comparison.empty:
         st.info(
-            "No official scores are available for the selected "
-            "regions yet. Once data is added, this section will "
-            "display a visual comparison."
+            "No verified scores are available for these regions yet. "
+            "The chart will appear once indicator values are added."
         )
     else:
         comparison_fig = px.bar(
@@ -529,13 +474,13 @@ if comparison_regions:
             y="Score",
             color="Indicator",
             barmode="group",
-            title="Indicator Comparison",
+            title="Regional Indicator Comparison",
             hover_data=["Type"],
         )
 
         comparison_fig.update_layout(
-            yaxis_title="Score",
             xaxis_title="Region",
+            yaxis_title="Score",
         )
 
         st.plotly_chart(
@@ -544,16 +489,13 @@ if comparison_regions:
         )
 
     st.dataframe(
-        comparison_df[
-            ["Region", "Type"] + INDICATORS
-        ],
+        comparison_df[["Region", "Type"] + INDICATORS],
         use_container_width=True,
         hide_index=True,
     )
+
 else:
-    st.info(
-        "Select at least one region to compare."
-    )
+    st.info("Select at least one region to compare.")
 
 # --------------------------------------------------
 # COMPLETE DATASET
@@ -563,9 +505,7 @@ st.divider()
 st.subheader("All Regions")
 
 st.dataframe(
-    df[
-        ["Region", "Type"] + INDICATORS
-    ],
+    df[["Region", "Type"] + INDICATORS],
     use_container_width=True,
     hide_index=True,
 )
