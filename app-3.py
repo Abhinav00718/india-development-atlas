@@ -433,7 +433,7 @@ def make_map(geojson, dataset, indicator):
                 if has_data
                 else None
             ),
-            showscale=has_data,
+            showscale=False,
             hovertemplate=(
                 "<b>%{customdata[0]}</b><br>"
                 + indicator
