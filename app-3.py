@@ -776,11 +776,12 @@ elif page == "Compare Regions":
         key="comparison_indicator",
     )
 
-    indicator_column = INDICATORS[selected_indicator]["column"]
+   indicator_column = INDICATORS[selected_indicator]["column"]
+comparison_dataset = get_indicator_dataset(selected_indicator)
 
-    comparison = dataset[
-        dataset["Region"].isin(selected_regions)
-    ].copy()
+comparison = comparison_dataset[
+    comparison_dataset["Region"].isin(selected_regions)
+].copy()
 
     if not comparison.empty:
         comparison["Year"] = pd.to_numeric(
@@ -1119,7 +1120,13 @@ elif page == "Data Explorer":
 
     current_dataset = get_dataset()
     st.subheader("Current dataset")
-    st.write(f"Rows: {len(current_dataset)}")
+    st.write(
+    "The multidimensional poverty indicator is loaded from the "
+    "NITI Aayog CSV in this project's GitHub repository. "
+    "Literacy rates are loaded separately from the MoSPI PLFS "
+    "Annual Report 2025 CSV. Other indicators remain blank until "
+    "verified data is supplied."
+)
     st.write(f"Columns: {len(current_dataset.columns)}")
     st.dataframe(
         current_dataset,
@@ -1171,6 +1178,14 @@ elif page == "About & Sources":
             "NITI Aayog: National Multidimensional Poverty Index",
             "https://www.niti.gov.in/",
         ),
+        (
+    "MoSPI: Periodic Labour Force Survey",
+    "https://mospi.gov.in/",
+),
+(
+    "PLFS Annual Report 2025",
+    "https://www.mospi.gov.in/uploads/publications_reports/publications_reports1780040415321_0624fb13-fb47-40bc-b470-7c7e9635c3ef_PLFS_2025_F_REV_29052026.pdf",
+),
         (
             "Census of India",
             "https://censusindia.gov.in/census.website/en/data",
