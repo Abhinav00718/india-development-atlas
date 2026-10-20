@@ -994,19 +994,19 @@ elif page == "Compare Regions":
 
                 max_value = period[required].max().max()
 
-                fig.update_layout(
+                               fig.update_layout(
                     title="MPI Poverty Rates by Survey Period",
                     xaxis_title="Population in multidimensional poverty (%)",
                     yaxis_title="",
                     barmode="group",
                     template="plotly_white",
                     height=max(380, 100 + 55 * len(period)),
-                    margin={"l": 180, "r": 100, "t": 80, "b": 100},
+                    margin={"l": 180, "r": 100, "t": 80, "b": 145},
                     legend={
-                        "title": "Survey period",
+                        "title": "",
                         "orientation": "h",
                         "yanchor": "top",
-                        "y": -0.18,
+                        "y": -0.28,
                         "xanchor": "center",
                         "x": 0.5,
                     },
