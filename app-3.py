@@ -776,13 +776,12 @@ elif page == "Compare Regions":
         key="comparison_indicator",
     )
 
-   indicator_column = INDICATORS[selected_indicator]["column"]
-comparison_dataset = get_indicator_dataset(selected_indicator)
+    indicator_column = INDICATORS[selected_indicator]["column"]
+    comparison_dataset = get_indicator_dataset(selected_indicator)
 
-comparison = comparison_dataset[
-    comparison_dataset["Region"].isin(selected_regions)
-].copy()
-
+    comparison = comparison_dataset[
+     comparison_dataset["Region"].isin(selected_regions)
+    ].copy()
     if not comparison.empty:
         comparison["Year"] = pd.to_numeric(
             comparison["Year"], errors="coerce"
