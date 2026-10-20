@@ -31,6 +31,7 @@ GITHUB_RAW = (
 
 GEOJSON_URL = GITHUB_RAW + "india_states_ut_simplified.geojson"
 MPI_CSV_URL = GITHUB_RAW + "india_mpi_niti_aayog_2023.csv"
+LITERACY_CSV_URL = GITHUB_RAW + "india_literacy_2025.csv"
 
 INDICATORS = {
     "Poverty rate (%)": {
@@ -49,7 +50,7 @@ INDICATORS = {
         "column": "Literacy_Rate_Percent",
         "unit": "%",
         "description": "Literacy rate for the relevant population and reference year.",
-        "source": "Census of India",
+        "source": "MoSPI, PLFS Annual Report 2025",
     },
     "GDP per capita (₹)": {
         "column": "GDP_Per_Capita_INR",
@@ -224,7 +225,40 @@ def load_mpi_dataset():
 
     return df
 
+@st.cache_data(show_spinner="Loading PLFS 2025 literacy data...", ttl=3600)
+def load_literacy_dataset():
+    response = requests.get(LITERACY_CSV_URL, timeout=30)
+    response.raise_for_status()
 
+    df = pd.read_csv(StringIO(response.text))
+
+    if "Literacy_Rate_Percent" not in df.columns:
+        raise ValueError("Literacy CSV is missing Literacy_Rate_Percent.")
+
+    df = validate_dataset(df)
+    df = df.dropna(subset=["Year", "Literacy_Rate_Percent"])
+
+    if df.empty:
+        raise ValueError("No valid literacy observations were found.")
+
+    return df
+
+
+def get_indicator_dataset(indicator_name):
+    uploaded = st.session_state.get("uploaded_dataset")
+
+    if uploaded is not None:
+        return validate_dataset(uploaded.copy())
+
+    if indicator_name == "Literacy rate (%)":
+        try:
+            return load_literacy_dataset()
+        except Exception as error:
+            st.error("Could not load the PLFS 2025 literacy dataset.")
+            st.caption(str(error))
+            return create_empty_dataset()
+
+    return dataset
 def get_dataset():
     """Uploaded session data takes priority; otherwise load GitHub MPI data."""
     uploaded = st.session_state.get("uploaded_dataset")
@@ -600,13 +634,14 @@ if page == "Development Map":
             selected_region = None
 
         indicator_info = INDICATORS[selected_indicator]
+        indicator_dataset = get_indicator_dataset(selected_indicator)
         st.caption(indicator_info["description"])
         st.caption(f"Source: {indicator_info['source']}")
 
     with left:
         fig, has_data = make_map(
-            geojson, dataset, selected_indicator, selected_region
-        )
+    geojson, indicator_dataset, selected_indicator, selected_region
+)
         st.plotly_chart(
             fig,
             use_container_width=True,
@@ -621,7 +656,7 @@ if page == "Development Map":
 
     island_fig, _ = make_map(
         geojson,
-        dataset,
+        indicator_dataset,
         selected_indicator,
         selected_region,
         island_map=True,
