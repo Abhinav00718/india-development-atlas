@@ -994,28 +994,35 @@ elif page == "Compare Regions":
 
                 max_value = period[required].max().max()
 
-                               fig.update_layout(
+                         
+                fig.update_layout(
                     title="MPI Poverty Rates by Survey Period",
-                    xaxis_title="Population in multidimensional poverty (%)",
                     yaxis_title="",
                     barmode="group",
                     template="plotly_white",
-                    height=max(380, 100 + 55 * len(period)),
-                    margin={"l": 180, "r": 100, "t": 80, "b": 145},
+                    height=max(420, 100 + 55 * len(period)),
+                    margin={"l": 180, "r": 100, "t": 80, "b": 210},
                     legend={
-                        "title": "",
+                        "title": {"text": ""},
                         "orientation": "h",
                         "yanchor": "top",
-                        "y": -0.28,
+                        "y": -0.50,
                         "xanchor": "center",
                         "x": 0.5,
                     },
                 )
 
                 fig.update_xaxes(
+                    title_text="Population in multidimensional poverty (%)",
+                    title_standoff=18,
                     range=[0, max(10, float(max_value) * 1.25)]
                 )
 
+
+                fig.update_xaxes(
+                    range=[0, max(10, float(max_value) * 1.25)]
+                )
+ fig.update_layout(legend_title_text=None)
                 st.plotly_chart(fig, use_container_width=True)
 
             st.caption(
