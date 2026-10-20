@@ -1022,7 +1022,7 @@ elif page == "Compare Regions":
                 fig.update_xaxes(
                     range=[0, max(10, float(max_value) * 1.25)]
                 )
- fig.update_layout(legend_title_text=None)
+                fig.update_layout(legend_title_text=None)
                 st.plotly_chart(fig, use_container_width=True)
 
             st.caption(
