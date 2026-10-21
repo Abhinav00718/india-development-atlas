@@ -743,12 +743,7 @@ elif page == "Explore a Region":
                 )
                 cols[i % 2].metric(indicator_name, displayed_value)
 
-            st.subheader("Available observations")
-            st.dataframe(
-                region_data.drop(columns=["_year"], errors="ignore"),
-                use_container_width=True,
-                hide_index=True,
-            )
+            
 
     fig, _ = make_map(
         geojson,
