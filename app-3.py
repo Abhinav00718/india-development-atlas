@@ -730,12 +730,12 @@ elif page == "Explore a Region":
             cols = st.columns(2)
             for i, (indicator_name, details) in enumerate(INDICATORS.items()):
                 if indicator_name == "Literacy rate (%)":
-    value = literacy_values.get(selected_region)
-else:
-    value = pd.to_numeric(
-        pd.Series([latest.get(details["column"])]),
-        errors="coerce",
-    ).iloc[0]
+                    value = literacy_values.get(selected_region)
+                else:
+                    value = pd.to_numeric(
+                        pd.Series([latest.get(details["column"])]),
+                        errors="coerce",
+                    ).iloc[0]
 
                 displayed_value = (
                     f"{value:,.2f} {details['unit']}"
