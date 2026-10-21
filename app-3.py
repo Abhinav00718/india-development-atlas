@@ -721,13 +721,19 @@ elif page == "Explore a Region":
                     "The MPI values shown below refer to the latest available "
                     "survey-period row in the dataset."
                 )
-
+            literacy_data = get_indicator_dataset("Literacy rate (%)")
+literacy_values = latest_region_values(
+    literacy_data, "Literacy_Rate_Percent"
+)
             cols = st.columns(2)
             for i, (indicator_name, details) in enumerate(INDICATORS.items()):
-                value = pd.to_numeric(
-                    pd.Series([latest.get(details["column"])]),
-                    errors="coerce",
-                ).iloc[0]
+                if indicator_name == "Literacy rate (%)":
+    value = literacy_values.get(selected_region)
+else:
+    value = pd.to_numeric(
+        pd.Series([latest.get(details["column"])]),
+        errors="coerce",
+    ).iloc[0]
 
                 displayed_value = (
                     f"{value:,.2f} {details['unit']}"
