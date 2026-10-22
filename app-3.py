@@ -528,9 +528,18 @@ def make_map(
             [1.0, "#1e3a8a"],
         ]
     else:
+        # If every region is missing, the base layer is neutral grey.
         z_values = [0] * len(locations)
         zmin, zmax = 0, 1
-        colorscale = [[0.0, "#d3deea"], [1.0, "#d3deea"]]
+        colorscale = [[0.0, "#d1d5db"], [1.0, "#d1d5db"]]
+
+    missing_locations = [
+        region for region, value in zip(locations, actual_values)
+        if value is None or pd.isna(value)
+    ]
+    missing_geojson = filter_geojson(
+        map_geojson, included_regions=set(missing_locations)
+    )
 
     customdata = [
         [
@@ -561,6 +570,29 @@ def make_map(
         ),
         name=map_title,
     ))
+
+    # Draw missing observations as an explicit neutral-grey layer. This
+    # keeps regions visible even when the selected indicator has no value.
+    if has_data and missing_locations:
+        fig.add_trace(go.Choropleth(
+            geojson=missing_geojson,
+            featureidkey="properties.atlas_region",
+            locations=missing_locations,
+            z=[0] * len(missing_locations),
+            zmin=0,
+            zmax=1,
+            colorscale=[[0, "#d1d5db"], [1, "#d1d5db"]],
+            showscale=False,
+            marker={"line": {"color": "#ffffff", "width": 1.0}},
+            customdata=[["Data unavailable for this indicator"]]
+                * len(missing_locations),
+            hovertemplate=(
+                "<b>%{location}</b><br>"
+                "%{customdata[0]}<extra></extra>"
+            ),
+            name="Data unavailable",
+            showlegend=False,
+        ))
 
     if selected_region and selected_region in locations:
         selected_geojson = filter_geojson(
@@ -603,6 +635,21 @@ def make_map(
         plot_bgcolor="#ffffff",
         font={"family": "Arial, sans-serif", "color": "#0f172a"},
         showlegend=False,
+        annotations=[
+            {
+                "text": "Grey = data unavailable",
+                "xref": "paper",
+                "yref": "paper",
+                "x": 0.99,
+                "y": 0.01,
+                "xanchor": "right",
+                "yanchor": "bottom",
+                "showarrow": False,
+                "font": {"size": 11, "color": "#4b5563"},
+                "bgcolor": "rgba(255,255,255,0.85)",
+                "borderpad": 3,
+            }
+        ],
     )
 
     return fig, has_data
