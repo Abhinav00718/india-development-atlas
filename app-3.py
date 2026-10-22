@@ -32,13 +32,18 @@ GITHUB_RAW = (
 GEOJSON_URL = GITHUB_RAW + "india_states_ut_simplified.geojson"
 MPI_CSV_URL = GITHUB_RAW + "india_mpi_niti_aayog_2023.csv"
 LITERACY_CSV_URL = GITHUB_RAW + "india_literacy_2025.csv"
+POVERTY_CSV_URL = GITHUB_RAW + "india_poverty_rate_2011_12.csv"
+GSDP_CSV_URL = GITHUB_RAW + "india_gdp_per_capita_gsdp_2019_2024.csv"
+UNEMPLOYMENT_CSV_URL = GITHUB_RAW + "india_unemployment_plfs_2025.csv"
+SCHOOL_CSV_URL = GITHUB_RAW + "india_school_enrolment_secondary_2024_25.csv"
+HEALTH_CSV_URL = GITHUB_RAW + "india_health_expenditure_per_capita_2017_2022.csv"
 
 INDICATORS = {
     "Poverty rate (%)": {
         "column": "Poverty_Rate_Percent",
         "unit": "%",
-        "description": "Share of the population below a defined poverty threshold.",
-        "source": "Official poverty statistics",
+        "description": "Combined rural and urban poverty ratio under the Tendulkar methodology for 2011–12; an older estimate.",
+        "source": "Press Information Bureau, state-wise poverty estimates for 2011–12 (Tendulkar methodology)",
     },
     "Multidimensional poverty (%)": {
         "column": "Multidimensional_Poverty_Percent",
@@ -52,29 +57,29 @@ INDICATORS = {
         "description": "Literacy rate for the relevant population and reference year.",
         "source": "MoSPI, PLFS Annual Report 2025",
     },
-    "GDP per capita (₹)": {
+    "Per-capita GSDP (₹)": {
         "column": "GDP_Per_Capita_INR",
         "unit": "₹",
-        "description": "Per-capita output using a documented price basis and reference year.",
-        "source": "Official state domestic product statistics",
+        "description": "Gross state domestic product per person at current prices; fiscal year is labelled by its ending year.",
+        "source": "MoSPI / State DES; Rajya Sabha Unstarred Question 1677 (10 Dec 2024)",
     },
     "Unemployment rate (%)": {
         "column": "Unemployment_Rate_Percent",
         "unit": "%",
-        "description": "Unemployment rate for the specified survey definition and period.",
-        "source": "Periodic Labour Force Survey",
+        "description": "Usual-status (ps+ss) unemployment rate, all ages, rural and urban persons, PLFS 2025.",
+        "source": "MoSPI, PLFS Annual Report 2025, Appendix A Table 18.0",
     },
     "School enrolment (%)": {
         "column": "School_Enrolment_Percent",
         "unit": "%",
-        "description": "School enrolment indicator for a specified age group.",
-        "source": "UDISE+ / Ministry of Education",
+        "description": "Gross enrolment ratio at secondary level (Classes IX–X), UDISE+ 2024–25; GER can exceed 100%.",
+        "source": "UDISE+ 2024–25; values reproduced in PRS Education analysis",
     },
     "Health expenditure per capita (₹)": {
         "column": "Health_Expenditure_Per_Capita_INR",
         "unit": "₹",
-        "description": "Per-capita health expenditure using a documented definition.",
-        "source": "National Health Accounts / official state data",
+        "description": "Per-capita total government health expenditure (₹); fiscal year is labelled by its ending year.",
+        "source": "National Health Accounts; Rajya Sabha Unstarred Question 276 (4 Feb 2025)",
     },
 }
 
@@ -244,21 +249,68 @@ def load_literacy_dataset():
     return df
 
 
+@st.cache_data(show_spinner="Loading indicator data from GitHub...", ttl=3600)
+def load_indicator_csv(url, indicator_column, label):
+    """Load one indicator's dedicated CSV and preserve genuinely missing values."""
+    response = requests.get(url, timeout=30)
+    response.raise_for_status()
+    df = pd.read_csv(StringIO(response.text))
+
+    if indicator_column not in df.columns:
+        raise ValueError(f"The {label} CSV is missing {indicator_column}.")
+
+    df = validate_dataset(df)
+    df = df.dropna(subset=["Year", indicator_column])
+
+    if df.empty:
+        raise ValueError(f"No valid dated observations were found for {label}.")
+
+    return df
+
+
 def get_indicator_dataset(indicator_name):
     uploaded = st.session_state.get("uploaded_dataset")
 
     if uploaded is not None:
         return validate_dataset(uploaded.copy())
 
-    if indicator_name == "Literacy rate (%)":
-        try:
-            return load_literacy_dataset()
-        except Exception as error:
-            st.error("Could not load the PLFS 2025 literacy dataset.")
-            st.caption(str(error))
-            return create_empty_dataset()
+    if indicator_name == "Multidimensional poverty (%)":
+        return dataset
 
-    return dataset
+    indicator_sources = {
+        "Poverty rate (%)": (
+            POVERTY_CSV_URL, "Poverty_Rate_Percent", "poverty",
+        ),
+        "Literacy rate (%)": (
+            LITERACY_CSV_URL, "Literacy_Rate_Percent", "literacy",
+        ),
+        "Per-capita GSDP (₹)": (
+            GSDP_CSV_URL, "GDP_Per_Capita_INR", "per-capita GSDP",
+        ),
+        "Unemployment rate (%)": (
+            UNEMPLOYMENT_CSV_URL, "Unemployment_Rate_Percent", "unemployment",
+        ),
+        "School enrolment (%)": (
+            SCHOOL_CSV_URL, "School_Enrolment_Percent", "school enrolment",
+        ),
+        "Health expenditure per capita (₹)": (
+            HEALTH_CSV_URL, "Health_Expenditure_Per_Capita_INR",
+            "health expenditure",
+        ),
+    }
+
+    if indicator_name not in indicator_sources:
+        return dataset
+
+    url, column, label = indicator_sources[indicator_name]
+    try:
+        return load_indicator_csv(url, column, label)
+    except Exception as error:
+        st.error(f"Could not load the {label} dataset from GitHub.")
+        st.caption(str(error))
+        return create_empty_dataset()
+
+
 def get_dataset():
     """Uploaded session data takes priority; otherwise load GitHub MPI data."""
     uploaded = st.session_state.get("uploaded_dataset")
@@ -567,8 +619,8 @@ page = st.sidebar.radio(
 
 st.sidebar.divider()
 st.sidebar.caption(
-    "MPI data is loaded from GitHub. Other indicators remain blank "
-    "until verified data is supplied."
+    "Each indicator is loaded from its own CSV in the GitHub repository. "
+    "Some sources are older or have missing regional values."
 )
 
 st.title("India Development Atlas")
@@ -701,49 +753,42 @@ elif page == "Explore a Region":
     st.subheader(selected_region)
     st.write(f"Administrative category: **{region_type}**")
 
-    region_data = dataset[dataset["Region"] == selected_region].copy()
+    st.caption(
+        "Each metric uses the latest available observation in its own source. "
+        "Reference years may differ, so values are not necessarily from the same year."
+    )
 
-    if region_data.empty:
-        st.info("No observations are available for this region yet.")
-    else:
-        region_data["_year"] = pd.to_numeric(
-            region_data["Year"], errors="coerce"
-        )
-        region_data = region_data.sort_values("_year")
-        region_data = region_data.dropna(subset=["_year"])
-        if region_data.empty:
-            st.info("No dated observations are available for this region.")
-        else:
-            latest = region_data.iloc[-1]
+    cols = st.columns(2)
+    for i, (indicator_name, details) in enumerate(INDICATORS.items()):
+        indicator_dataset = get_indicator_dataset(indicator_name)
+        region_rows = indicator_dataset[
+            indicator_dataset["Region"] == selected_region
+        ].copy()
 
-            if selected_region in REGIONS:
-                st.caption(
-                    "The MPI values shown below refer to the latest available "
-                    "survey-period row in the dataset."
-                )
-            literacy_data = get_indicator_dataset("Literacy rate (%)")
-            literacy_values = latest_region_values(
-                literacy_data, "Literacy_Rate_Percent"
+        if not region_rows.empty:
+            region_rows["Year"] = pd.to_numeric(
+                region_rows["Year"], errors="coerce"
             )
+            region_rows[details["column"]] = pd.to_numeric(
+                region_rows[details["column"]], errors="coerce"
+            )
+            region_rows = region_rows.dropna(
+                subset=["Year", details["column"]]
+            ).sort_values("Year")
 
-         
-            cols = st.columns(2)
-            for i, (indicator_name, details) in enumerate(INDICATORS.items()):
-                if indicator_name == "Literacy rate (%)":
-                    value = literacy_values.get(selected_region)
-                else:
-                    value = pd.to_numeric(
-                        pd.Series([latest.get(details["column"])]),
-                        errors="coerce",
-                    ).iloc[0]
+        if region_rows.empty:
+            cols[i % 2].metric(indicator_name, "No data")
+        else:
+            latest = region_rows.iloc[-1]
+            value = latest[details["column"]]
+            year = int(latest["Year"])
+            cols[i % 2].metric(
+                indicator_name,
+                f"{value:,.2f} {details['unit']}",
+                help=f"Reference year: {year}. Source: {details['source']}",
+            )
+            cols[i % 2].caption(f"{indicator_name}: reference year {year}")
 
-                displayed_value = (
-                    f"{value:,.2f} {details['unit']}"
-                    if pd.notna(value) else "No data"
-                )
-                cols[i % 2].metric(indicator_name, displayed_value)
-
-            
 
     fig, _ = make_map(
         geojson,
@@ -1123,11 +1168,10 @@ elif page == "Data Explorer":
     current_dataset = get_dataset()
     st.subheader("Current dataset")
     st.write(
-    "The multidimensional poverty indicator is loaded from the "
-    "NITI Aayog CSV in this project's GitHub repository. "
-    "Literacy rates are loaded separately from the MoSPI PLFS "
-    "Annual Report 2025 CSV. Other indicators remain blank until "
-    "verified data is supplied."
+    "The current dataset below is the MPI dataset used for the map and "
+    "poverty-reduction analysis. Other indicators are loaded separately "
+    "from their own CSV files when selected. Some datasets are historical "
+    "or contain missing values; check each indicator's source and reference year."
 )
     st.write(f"Columns: {len(current_dataset.columns)}")
     st.dataframe(
@@ -1169,9 +1213,10 @@ elif page == "About & Sources":
 
     st.subheader("Current dataset")
     st.write(
-        "The MPI indicator is loaded from the NITI Aayog CSV stored in "
-        "this project's GitHub repository. Other indicators remain blank "
-        "until their data is added and verified."
+        "Each indicator is loaded from its dedicated CSV in this project's "
+        "GitHub repository. Sources and reference periods differ by indicator, "
+        "and some values are missing. In particular, the state poverty-rate "
+        "series is from 2011–12 and should not be treated as current."
     )
 
     st.subheader("Sources")
@@ -1191,6 +1236,14 @@ elif page == "About & Sources":
         (
             "Census of India",
             "https://censusindia.gov.in/census.website/en/data",
+        ),
+        (
+            "Rajya Sabha Q 1677 (10 Dec 2024): State/UT per-capita GSDP",
+            "https://sansad.in/getFile/annex/266/AU1677_35H76u.pdf?source=pqars",
+        ),
+        (
+            "Rajya Sabha Q 276 (4 Feb 2025): Per-capita government health expenditure",
+            "https://sansad.in/getFile/annex/267/AU276_1fzsrW.pdf?source=pqars",
         ),
         (
             "Reserve Bank of India publications",
