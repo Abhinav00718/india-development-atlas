@@ -622,9 +622,10 @@ page = st.sidebar.radio(
     [
         "Development Map",
         "State Rankings",
+        "Economic Relationships Lab",
         "Explore a Region",
         "Compare Regions",
-        "Data Explorer",
+        "Economic Relationships Lab",
         "About & Sources",
     ],
 )
@@ -1080,8 +1081,7 @@ elif page == "Compare Regions":
     if mpi_data.empty:
         st.warning(
             "The current dataset has no usable MPI survey-period data. "
-            "In Data Explorer, remove any uploaded CSV to return to the "
-            "default GitHub dataset."
+            "Check that the GitHub MPI CSV is available and contains both survey periods."
         )
     else:
         mpi = mpi_data.pivot_table(
@@ -1301,78 +1301,184 @@ elif page == "Compare Regions":
 
 
 # ============================================================
-# PAGE 4: DATA EXPLORER
+# PAGE 4: ECONOMIC RELATIONSHIPS LAB
 # ============================================================
 
-elif page == "Data Explorer":
-    st.header("Data Explorer")
+elif page == "Economic Relationships Lab":
+    st.header("Economic Relationships Lab")
     st.write(
-        "Upload a CSV of state or Union Territory observations. "
-        "Use the template to preserve the expected column names."
+        "Explore how two socioeconomic indicators vary across Indian states "
+        "and Union Territories. These are exploratory associations, not proof "
+        "that one indicator causes changes in another."
     )
 
-    st.download_button(
-        "Download blank CSV template",
-        data=create_empty_dataset().to_csv(index=False).encode("utf-8"),
-        file_name="india_development_atlas_template.csv",
-        mime="text/csv",
+    indicator_names = list(INDICATORS.keys())
+    default_x = "Per-capita GSDP (₹)"
+    default_y = "Multidimensional poverty (%)"
+
+    control_left, control_right = st.columns(2)
+    with control_left:
+        x_indicator = st.selectbox(
+            "Horizontal axis (X)",
+            indicator_names,
+            index=indicator_names.index(default_x),
+            key="relationships_x",
+        )
+    with control_right:
+        y_indicator = st.selectbox(
+            "Vertical axis (Y)",
+            indicator_names,
+            index=indicator_names.index(default_y),
+            key="relationships_y",
+        )
+
+    region_filter = st.radio(
+        "Regions to include",
+        ["All regions", "States only", "Union Territories only"],
+        horizontal=True,
+        key="relationships_region_filter",
     )
 
-    uploaded_file = st.file_uploader(
-        "Upload completed CSV", type=["csv"]
-    )
+    if x_indicator == y_indicator:
+        st.info("Choose two different indicators to explore their relationship.")
+    else:
+        x_column = INDICATORS[x_indicator]["column"]
+        y_column = INDICATORS[y_indicator]["column"]
 
-    if uploaded_file is not None:
-        try:
-            uploaded_df = pd.read_csv(uploaded_file)
-            uploaded_df = validate_dataset(uploaded_df)
+        x_data = get_indicator_dataset(x_indicator).copy()
+        y_data = get_indicator_dataset(y_indicator).copy()
 
-            if uploaded_df.empty:
-                st.error(
-                    "No recognised state or UT names were found in the CSV."
+        x_data["Year"] = pd.to_numeric(x_data["Year"], errors="coerce")
+        x_data[x_column] = pd.to_numeric(x_data[x_column], errors="coerce")
+        x_data = x_data.dropna(subset=["Region", "Year", x_column])
+        x_data = x_data.sort_values("Year").drop_duplicates("Region", keep="last")
+        x_data = x_data[["Region", "Year", x_column]].rename(
+            columns={"Year": "X_Year", x_column: "X_Value"}
+        )
+
+        y_data["Year"] = pd.to_numeric(y_data["Year"], errors="coerce")
+        y_data[y_column] = pd.to_numeric(y_data[y_column], errors="coerce")
+        y_data = y_data.dropna(subset=["Region", "Year", y_column])
+        y_data = y_data.sort_values("Year").drop_duplicates("Region", keep="last")
+        y_data = y_data[["Region", "Year", y_column]].rename(
+            columns={"Year": "Y_Year", y_column: "Y_Value"}
+        )
+
+        relationship = x_data.merge(y_data, on="Region", how="inner")
+        if region_filter == "States only":
+            relationship = relationship[
+                ~relationship["Region"].isin(UT_REGIONS)
+            ]
+        elif region_filter == "Union Territories only":
+            relationship = relationship[
+                relationship["Region"].isin(UT_REGIONS)
+            ]
+
+        relationship = relationship.dropna(subset=["X_Value", "Y_Value"]).copy()
+        relationship["Region type"] = relationship["Region"].apply(
+            lambda region: "Union Territory" if region in UT_REGIONS else "State"
+        )
+
+        st.caption(
+            f"X-axis: {INDICATORS[x_indicator]['description']} "
+            f"Y-axis: {INDICATORS[y_indicator]['description']}"
+        )
+        st.warning(
+            "Each indicator uses its latest available observation, so the years "
+            "may differ between indicators and regions. The scatter plot is "
+            "descriptive and should not be interpreted causally."
+        )
+
+        if len(relationship) < 3:
+            st.info(
+                f"Only {len(relationship)} regions have data for both indicators. "
+                "At least three are needed to show a useful exploratory relationship."
+            )
+        else:
+            correlation = relationship["X_Value"].corr(relationship["Y_Value"])
+            metric_a, metric_b, metric_c = st.columns(3)
+            metric_a.metric("Regions with both values", len(relationship))
+            metric_b.metric(
+                "Pearson correlation",
+                f"{correlation:.3f}" if pd.notna(correlation) else "Unavailable",
+            )
+            metric_c.metric(
+                "Reference years",
+                f"{int(relationship['X_Year'].min())}–{int(relationship['X_Year'].max())} (X)",
+                help=(
+                    "Y-axis years: "
+                    f"{int(relationship['Y_Year'].min())}–"
+                    f"{int(relationship['Y_Year'].max())}. "
+                    "These ranges describe the observations used, not a common year."
+                ),
+            )
+
+            fig = go.Figure()
+            fig.add_trace(go.Scatter(
+                x=relationship["X_Value"],
+                y=relationship["Y_Value"],
+                mode="markers+text",
+                text=relationship["Region"],
+                textposition="top center",
+                customdata=relationship[["X_Year", "Y_Year", "Region type"]],
+                marker={"size": 11, "opacity": 0.8},
+                hovertemplate=(
+                    "<b>%{text}</b><br>"
+                    + x_indicator + ": %{x:,.2f}<br>"
+                    + y_indicator + ": %{y:,.2f}<br>"
+                    + "X reference year: %{customdata[0]:.0f}<br>"
+                    + "Y reference year: %{customdata[1]:.0f}<br>"
+                    + "Region type: %{customdata[2]}<extra></extra>"
+                ),
+                name="Regions",
+            ))
+
+            if relationship["X_Value"].nunique() > 1:
+                import numpy as np
+                slope, intercept = np.polyfit(
+                    relationship["X_Value"].astype(float),
+                    relationship["Y_Value"].astype(float),
+                    1,
                 )
-            else:
-                st.session_state["uploaded_dataset"] = uploaded_df
-                st.success(
-                    f"Loaded {len(uploaded_df)} observation rows for "
-                    "this session. This upload overrides the GitHub dataset "
-                    "until the session is reset or the app is restarted."
+                x_line = np.linspace(
+                    relationship["X_Value"].min(),
+                    relationship["X_Value"].max(),
+                    100,
                 )
-                st.dataframe(
-                    uploaded_df,
-                    use_container_width=True,
-                    hide_index=True,
-                )
-        except Exception as error:
-            st.error("The CSV could not be read.")
-            st.code(str(error))
+                fig.add_trace(go.Scatter(
+                    x=x_line,
+                    y=slope * x_line + intercept,
+                    mode="lines",
+                    name="Linear trend",
+                    hoverinfo="skip",
+                ))
 
-    current_dataset = get_dataset()
-    st.subheader("Current dataset")
-    st.write(
-    "The current dataset below is the MPI dataset used for the map and "
-    "poverty-reduction analysis. Other indicators are loaded separately "
-    "from their own CSV files when selected. Some datasets are historical "
-    "or contain missing values; check each indicator's source and reference year."
-)
-    st.write(f"Columns: {len(current_dataset.columns)}")
-    st.dataframe(
-        current_dataset,
-        use_container_width=True,
-        hide_index=True,
-    )
+            fig.update_layout(
+                title=f"{y_indicator} vs {x_indicator}",
+                xaxis_title=f"{x_indicator} ({INDICATORS[x_indicator]['unit']})",
+                yaxis_title=f"{y_indicator} ({INDICATORS[y_indicator]['unit']})",
+                template="plotly_white",
+                height=650,
+                margin={"l": 70, "r": 35, "t": 80, "b": 120},
+            )
+            st.plotly_chart(fig, use_container_width=True)
 
-    st.download_button(
-        "Download current dataset",
-        data=current_dataset.to_csv(index=False).encode("utf-8"),
-        file_name="india_development_atlas_data.csv",
-        mime="text/csv",
-    )
-
-    st.caption(
-        "To return to the default GitHub MPI data, remove the uploaded "
-        "file from the uploader or restart the app session."
-    )
+            st.subheader("Regions included")
+            display = relationship[
+                ["Region", "Region type", "X_Value", "X_Year", "Y_Value", "Y_Year"]
+            ].rename(columns={
+                "X_Value": x_indicator,
+                "X_Year": f"{x_indicator} reference year",
+                "Y_Value": y_indicator,
+                "Y_Year": f"{y_indicator} reference year",
+            })
+            st.dataframe(display.round(2), use_container_width=True, hide_index=True)
+            st.download_button(
+                "Download relationship data as CSV",
+                data=display.to_csv(index=False).encode("utf-8"),
+                file_name="india_atlas_economic_relationships.csv",
+                mime="text/csv",
+            )
 
 
 # ============================================================
