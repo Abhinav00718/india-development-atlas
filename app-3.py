@@ -37,6 +37,7 @@ GSDP_CSV_URL = GITHUB_RAW + "india_gdp_per_capita_gsdp_2019_2024.csv"
 UNEMPLOYMENT_CSV_URL = GITHUB_RAW + "india_unemployment_plfs_2025.csv"
 SCHOOL_CSV_URL = GITHUB_RAW + "india_school_enrolment_secondary_2024_25.csv"
 HEALTH_CSV_URL = GITHUB_RAW + "india_health_expenditure_per_capita_2017_2022.csv"
+POWER_CSV_URL = GITHUB_RAW + "india_per_capita_power_availability_2024_25.csv"
 
 INDICATORS = {
     "Poverty rate (%)": {
@@ -80,6 +81,12 @@ INDICATORS = {
         "unit": "₹",
         "description": "Per-capita total government health expenditure (₹); fiscal year is labelled by its ending year.",
         "source": "National Health Accounts; Rajya Sabha Unstarred Question 276 (4 Feb 2025)",
+    },
+    "Per-capita power availability (kWh)": {
+        "column": "Per_Capita_Power_Availability_kWh",
+        "unit": "kWh per person",
+        "description": "Per-capita availability of power for fiscal year 2024–25. This is an availability measure, not household electricity consumption. The Ladakh value is unavailable in the source table.",
+        "source": "RBI, Handbook of Statistics on Indian States, Table 138; Dataful dataset 21005",
     },
 }
 
@@ -296,6 +303,10 @@ def get_indicator_dataset(indicator_name):
         "Health expenditure per capita (₹)": (
             HEALTH_CSV_URL, "Health_Expenditure_Per_Capita_INR",
             "health expenditure",
+        ),
+        "Per-capita power availability (kWh)": (
+            POWER_CSV_URL, "Per_Capita_Power_Availability_kWh",
+            "per-capita power availability",
         ),
     }
 
