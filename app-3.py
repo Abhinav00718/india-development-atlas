@@ -505,18 +505,25 @@ def make_map(
     ]
     actual_values = [values_by_region.get(region) for region in locations]
 
-    has_data = any(
-        value is not None and pd.notna(value) for value in actual_values
-    )
+    # Draw available and unavailable regions in separate traces. Plotly may
+    # omit polygons with null z-values, so a dedicated grey trace guarantees
+    # that regions with missing observations remain visible on the map.
+    available_pairs = [
+        (region, value)
+        for region, value in zip(locations, actual_values)
+        if value is not None and pd.notna(value)
+    ]
+    missing_locations = [
+        region
+        for region, value in zip(locations, actual_values)
+        if value is None or pd.isna(value)
+    ]
+    has_data = bool(available_pairs)
 
     if has_data:
-        z_values = [
-            float(value) if value is not None and pd.notna(value) else None
-            for value in actual_values
-        ]
-        valid_values = [value for value in z_values if value is not None]
-        zmin, zmax = min(valid_values), max(valid_values)
-
+        data_locations = [region for region, _ in available_pairs]
+        data_values = [float(value) for _, value in available_pairs]
+        zmin, zmax = min(data_values), max(data_values)
         if zmin == zmax:
             zmax = zmin + 1
 
@@ -527,40 +534,51 @@ def make_map(
             [0.75, "#2563eb"],
             [1.0, "#1e3a8a"],
         ]
-    else:
-        z_values = [0] * len(locations)
-        zmin, zmax = 0, 1
-        colorscale = [[0.0, "#d3deea"], [1.0, "#d3deea"]]
+        data_geojson = filter_geojson(
+            map_geojson, included_regions=set(data_locations)
+        )
+        fig.add_trace(go.Choropleth(
+            geojson=data_geojson,
+            featureidkey="properties.atlas_region",
+            locations=data_locations,
+            z=data_values,
+            zmin=zmin,
+            zmax=zmax,
+            colorscale=colorscale,
+            showscale=True,
+            colorbar={"title": unit, "thickness": 14, "len": 0.65},
+            marker={"line": {"color": "#ffffff", "width": 1.0}},
+            customdata=[[f"{value:,.2f} {unit}"] for value in data_values],
+            hovertemplate=(
+                "<b>%{location}</b><br>"
+                + selected_indicator
+                + ": %{customdata[0]}<extra></extra>"
+            ),
+            name=map_title,
+        ))
 
-    customdata = [
-        [
-            f"{value:,.2f} {unit}"
-            if value is not None and pd.notna(value)
-            else "No data available"
-        ]
-        for value in actual_values
-    ]
-
-    fig.add_trace(go.Choropleth(
-        geojson=map_geojson,
-        featureidkey="properties.atlas_region",
-        locations=locations,
-        z=z_values,
-        zmin=zmin,
-        zmax=zmax,
-        colorscale=colorscale,
-        showscale=has_data,
-        colorbar={"title": unit, "thickness": 14, "len": 0.65}
-        if has_data else None,
-        marker={"line": {"color": "#ffffff", "width": 1.0}},
-        customdata=customdata,
-        hovertemplate=(
-            "<b>%{location}</b><br>"
-            + selected_indicator
-            + ": %{customdata[0]}<extra></extra>"
-        ),
-        name=map_title,
-    ))
+    if missing_locations:
+        missing_geojson = filter_geojson(
+            map_geojson, included_regions=set(missing_locations)
+        )
+        fig.add_trace(go.Choropleth(
+            geojson=missing_geojson,
+            featureidkey="properties.atlas_region",
+            locations=missing_locations,
+            z=[0] * len(missing_locations),
+            zmin=0,
+            zmax=1,
+            colorscale=[[0, "#d3deea"], [1, "#d3deea"]],
+            showscale=False,
+            marker={"line": {"color": "#ffffff", "width": 1.0}},
+            customdata=[["No data available"] for _ in missing_locations],
+            hovertemplate=(
+                "<b>%{location}</b><br>"
+                + selected_indicator
+                + ": %{customdata[0]}<extra></extra>"
+            ),
+            name="Regions with unavailable data",
+        ))
 
     if selected_region and selected_region in locations:
         selected_geojson = filter_geojson(
@@ -625,7 +643,6 @@ page = st.sidebar.radio(
         "Economic Relationships Lab",
         "Explore a Region",
         "Compare Regions",
-        "Economic Relationships Lab",
         "About & Sources",
     ],
 )
