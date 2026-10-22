@@ -528,18 +528,9 @@ def make_map(
             [1.0, "#1e3a8a"],
         ]
     else:
-        # If every region is missing, the base layer is neutral grey.
         z_values = [0] * len(locations)
         zmin, zmax = 0, 1
-        colorscale = [[0.0, "#d1d5db"], [1.0, "#d1d5db"]]
-
-    missing_locations = [
-        region for region, value in zip(locations, actual_values)
-        if value is None or pd.isna(value)
-    ]
-    missing_geojson = filter_geojson(
-        map_geojson, included_regions=set(missing_locations)
-    )
+        colorscale = [[0.0, "#d3deea"], [1.0, "#d3deea"]]
 
     customdata = [
         [
@@ -570,29 +561,6 @@ def make_map(
         ),
         name=map_title,
     ))
-
-    # Draw missing observations as an explicit neutral-grey layer. This
-    # keeps regions visible even when the selected indicator has no value.
-    if has_data and missing_locations:
-        fig.add_trace(go.Choropleth(
-            geojson=missing_geojson,
-            featureidkey="properties.atlas_region",
-            locations=missing_locations,
-            z=[0] * len(missing_locations),
-            zmin=0,
-            zmax=1,
-            colorscale=[[0, "#d1d5db"], [1, "#d1d5db"]],
-            showscale=False,
-            marker={"line": {"color": "#ffffff", "width": 1.0}},
-            customdata=[["Data unavailable for this indicator"]]
-                * len(missing_locations),
-            hovertemplate=(
-                "<b>%{location}</b><br>"
-                "%{customdata[0]}<extra></extra>"
-            ),
-            name="Data unavailable",
-            showlegend=False,
-        ))
 
     if selected_region and selected_region in locations:
         selected_geojson = filter_geojson(
@@ -635,21 +603,6 @@ def make_map(
         plot_bgcolor="#ffffff",
         font={"family": "Arial, sans-serif", "color": "#0f172a"},
         showlegend=False,
-        annotations=[
-            {
-                "text": "Grey = data unavailable",
-                "xref": "paper",
-                "yref": "paper",
-                "x": 0.99,
-                "y": 0.01,
-                "xanchor": "right",
-                "yanchor": "bottom",
-                "showarrow": False,
-                "font": {"size": 11, "color": "#4b5563"},
-                "bgcolor": "rgba(255,255,255,0.85)",
-                "borderpad": 3,
-            }
-        ],
     )
 
     return fig, has_data
@@ -668,6 +621,7 @@ page = st.sidebar.radio(
     "Navigate",
     [
         "Development Map",
+        "State Rankings",
         "Explore a Region",
         "Compare Regions",
         "Data Explorer",
@@ -793,6 +747,176 @@ if page == "Development Map":
         "Download blank CSV template",
         data=create_empty_dataset().to_csv(index=False).encode("utf-8"),
         file_name="india_development_atlas_template.csv",
+        mime="text/csv",
+    )
+
+
+
+# ============================================================
+# PAGE 2: STATE RANKINGS
+# ============================================================
+
+elif page == "State Rankings":
+    st.header("State Development Rankings")
+    st.write(
+        "Rank states and Union Territories on a selected development indicator. "
+        "Each region uses its latest available observation in that indicator's source."
+    )
+
+    controls = st.columns([1.6, 1, 1])
+    with controls[0]:
+        selected_indicator = st.selectbox(
+            "Indicator to rank",
+            list(INDICATORS.keys()),
+            key="ranking_indicator",
+        )
+    with controls[1]:
+        region_scope = st.selectbox(
+            "Regions to include",
+            ["All regions", "States only", "Union Territories only"],
+            key="ranking_scope",
+        )
+    with controls[2]:
+        ranking_order = st.selectbox(
+            "Ranking order",
+            ["Highest first", "Lowest first"],
+            key="ranking_order",
+            help=(
+                "Choose whether higher or lower values appear first. "
+                "The meaning of 'better' depends on the indicator."
+            ),
+        )
+
+    details = INDICATORS[selected_indicator]
+    indicator_column = details["column"]
+    ranking_dataset = get_indicator_dataset(selected_indicator).copy()
+
+    ranking_dataset["Year"] = pd.to_numeric(
+        ranking_dataset["Year"], errors="coerce"
+    )
+    ranking_dataset[indicator_column] = pd.to_numeric(
+        ranking_dataset[indicator_column], errors="coerce"
+    )
+    ranking_dataset = ranking_dataset.dropna(subset=["Year"])
+    ranking_dataset = ranking_dataset.sort_values("Year")
+    ranking_dataset = ranking_dataset.drop_duplicates("Region", keep="last")
+
+    # Start from all 36 regions so missing observations remain visible.
+    rankings = pd.DataFrame({"Region": REGIONS})
+    rankings["Region_Type"] = rankings["Region"].apply(
+        lambda region: "Union Territory" if region in UT_REGIONS else "State"
+    )
+    rankings = rankings.merge(
+        ranking_dataset[["Region", "Year", indicator_column, "Source", "Notes"]],
+        on="Region",
+        how="left",
+    )
+    rankings["Reference year"] = rankings["Year"].apply(
+        lambda year: int(year) if pd.notna(year) else None
+    )
+    rankings["Data status"] = rankings[indicator_column].apply(
+        lambda value: "Available" if pd.notna(value) else "Unavailable"
+    )
+
+    if region_scope == "States only":
+        rankings = rankings[rankings["Region_Type"] == "State"].copy()
+    elif region_scope == "Union Territories only":
+        rankings = rankings[rankings["Region_Type"] == "Union Territory"].copy()
+
+    available = rankings.dropna(subset=[indicator_column]).copy()
+    unavailable = rankings[rankings[indicator_column].isna()].copy()
+    ascending = ranking_order == "Lowest first"
+    available = available.sort_values(
+        indicator_column, ascending=ascending
+    ).reset_index(drop=True)
+    available.insert(0, "Rank", range(1, len(available) + 1))
+
+    total_regions = len(rankings)
+    available_count = len(available)
+    missing_count = len(unavailable)
+    metric_cols = st.columns(3)
+    metric_cols[0].metric("Regions included", total_regions)
+    metric_cols[1].metric("Regions with data", f"{available_count} / {total_regions}")
+    metric_cols[2].metric("Regions missing data", missing_count)
+
+    st.caption(details["description"])
+    st.caption(f"Source: {details['source']} · Unit: {details['unit']}")
+    st.info(
+        "Rank order is numerical, not a judgement of overall development. "
+        "For poverty and unemployment, for example, a lower value may be preferable; "
+        "for income or power availability, interpretation is different. "
+        "Reference years may differ across regions."
+    )
+
+    display_columns = [
+        "Rank", "Region", "Region_Type", indicator_column,
+        "Reference year", "Data status",
+    ]
+    display = available[display_columns].rename(columns={
+        "Region_Type": "Region type",
+        indicator_column: f"{selected_indicator} ({details['unit']})",
+    })
+
+    st.subheader("Ranked regions")
+    if display.empty:
+        st.warning("No valid observations are available for this indicator and filter.")
+    else:
+        st.dataframe(
+            display.round({f"{selected_indicator} ({details['unit']})": 2}),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+        chart_data = available.head(15).sort_values(
+            indicator_column, ascending=True
+        )
+        fig = go.Figure(go.Bar(
+            x=chart_data[indicator_column],
+            y=chart_data["Region"],
+            orientation="h",
+            text=chart_data[indicator_column].map(lambda value: f"{value:,.2f}"),
+            textposition="outside",
+            cliponaxis=False,
+            customdata=chart_data[["Reference year"]].to_numpy(),
+            hovertemplate=(
+                "<b>%{y}</b><br>"
+                + selected_indicator + ": %{x:,.2f} " + details["unit"]
+                + "<br>Reference year: %{customdata[0]}<extra></extra>"
+            ),
+        ))
+        fig.update_layout(
+            title=f"Top {min(15, len(available))} by selected ranking order",
+            xaxis_title=f"{selected_indicator} ({details['unit']})",
+            yaxis_title="",
+            template="plotly_white",
+            height=max(420, 28 * min(15, len(available)) + 140),
+            margin={"l": 150, "r": 70, "t": 70, "b": 60},
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+    st.subheader("Regions with unavailable data")
+    if unavailable.empty:
+        st.success("All regions in this selection have a valid observation.")
+    else:
+        st.dataframe(
+            unavailable[["Region", "Region_Type", "Data status"]].rename(
+                columns={"Region_Type": "Region type"}
+            ),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+    export = rankings[[
+        "Region", "Region_Type", indicator_column,
+        "Reference year", "Data status", "Source", "Notes",
+    ]].rename(columns={
+        "Region_Type": "Region type",
+        indicator_column: f"{selected_indicator} ({details['unit']})",
+    })
+    st.download_button(
+        "Download ranking and data coverage (CSV)",
+        data=export.to_csv(index=False).encode("utf-8"),
+        file_name="india_development_rankings.csv",
         mime="text/csv",
     )
 
