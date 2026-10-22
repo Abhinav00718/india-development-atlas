@@ -505,20 +505,43 @@ def make_map(
     ]
     actual_values = [values_by_region.get(region) for region in locations]
 
-    # Draw available and unavailable regions in separate traces. Plotly may
-    # omit polygons with null z-values, so a dedicated grey trace guarantees
-    # that regions with missing observations remain visible on the map.
+    # Draw every polygon in a neutral-grey base trace first. This is especially
+    # important for the island inset: Plotly can fail to show tiny polygons when
+    # the trace contains only missing-value regions or a reduced GeoJSON subset.
+    # Available observations are overlaid as a second trace.
     available_pairs = [
         (region, value)
         for region, value in zip(locations, actual_values)
         if value is not None and pd.notna(value)
     ]
-    missing_locations = [
-        region
-        for region, value in zip(locations, actual_values)
-        if value is None or pd.isna(value)
-    ]
     has_data = bool(available_pairs)
+
+    base_customdata = [
+        [
+            f"{value:,.2f} {unit}"
+            if value is not None and pd.notna(value)
+            else "No data available"
+        ]
+        for value in actual_values
+    ]
+    fig.add_trace(go.Choropleth(
+        geojson=map_geojson,
+        featureidkey="properties.atlas_region",
+        locations=locations,
+        z=[0] * len(locations),
+        zmin=0,
+        zmax=1,
+        colorscale=[[0, "#d3deea"], [1, "#d3deea"]],
+        showscale=False,
+        marker={"line": {"color": "#ffffff", "width": 1.2}},
+        customdata=base_customdata,
+        hovertemplate=(
+            "<b>%{location}</b><br>"
+            + selected_indicator
+            + ": %{customdata[0]}<extra></extra>"
+        ),
+        name="Regions (base layer)",
+    ))
 
     if has_data:
         data_locations = [region for region, _ in available_pairs]
@@ -534,11 +557,8 @@ def make_map(
             [0.75, "#2563eb"],
             [1.0, "#1e3a8a"],
         ]
-        data_geojson = filter_geojson(
-            map_geojson, included_regions=set(data_locations)
-        )
         fig.add_trace(go.Choropleth(
-            geojson=data_geojson,
+            geojson=map_geojson,
             featureidkey="properties.atlas_region",
             locations=data_locations,
             z=data_values,
@@ -547,7 +567,7 @@ def make_map(
             colorscale=colorscale,
             showscale=True,
             colorbar={"title": unit, "thickness": 14, "len": 0.65},
-            marker={"line": {"color": "#ffffff", "width": 1.0}},
+            marker={"line": {"color": "#ffffff", "width": 1.2}},
             customdata=[[f"{value:,.2f} {unit}"] for value in data_values],
             hovertemplate=(
                 "<b>%{location}</b><br>"
@@ -555,29 +575,6 @@ def make_map(
                 + ": %{customdata[0]}<extra></extra>"
             ),
             name=map_title,
-        ))
-
-    if missing_locations:
-        missing_geojson = filter_geojson(
-            map_geojson, included_regions=set(missing_locations)
-        )
-        fig.add_trace(go.Choropleth(
-            geojson=missing_geojson,
-            featureidkey="properties.atlas_region",
-            locations=missing_locations,
-            z=[0] * len(missing_locations),
-            zmin=0,
-            zmax=1,
-            colorscale=[[0, "#d3deea"], [1, "#d3deea"]],
-            showscale=False,
-            marker={"line": {"color": "#ffffff", "width": 1.0}},
-            customdata=[["No data available"] for _ in missing_locations],
-            hovertemplate=(
-                "<b>%{location}</b><br>"
-                + selected_indicator
-                + ": %{customdata[0]}<extra></extra>"
-            ),
-            name="Regions with unavailable data",
         ))
 
     if selected_region and selected_region in locations:
