@@ -637,6 +637,7 @@ page = st.sidebar.radio(
     [
         "Development Map",
         "State Rankings",
+        "Data Quality & Coverage",
         "Economic Relationships Lab",
         "Explore a Region",
         "Compare Regions",
@@ -1498,6 +1499,175 @@ elif page == "Economic Relationships Lab":
 # ============================================================
 # PAGE 5: ABOUT AND SOURCES
 # ============================================================
+
+# ============================================================
+# PAGE: DATA QUALITY AND COVERAGE
+# ============================================================
+
+elif page == "Data Quality & Coverage":
+    st.header("Data Quality & Coverage")
+    st.write(
+        "Check which indicators have usable observations for each state or "
+        "Union Territory, the reference years available, and where the atlas "
+        "has gaps. Coverage is calculated from the latest usable observation "
+        "for each region; it does not mean every source is equally current or comparable."
+    )
+
+    quality_scope = st.radio(
+        "Regions to include",
+        ["All regions", "States only", "Union Territories only"],
+        horizontal=True,
+        key="quality_region_scope",
+    )
+
+    quality_regions = list(REGIONS)
+    if quality_scope == "States only":
+        quality_regions = [r for r in REGIONS if r not in UT_REGIONS]
+    elif quality_scope == "Union Territories only":
+        quality_regions = [r for r in REGIONS if r in UT_REGIONS]
+
+    quality_rows = []
+    coverage_columns = {}
+    year_columns = {}
+
+    with st.spinner("Checking coverage for all indicators..."):
+        for indicator_name, details in INDICATORS.items():
+            column = details["column"]
+            try:
+                raw = get_indicator_dataset(indicator_name).copy()
+                if column not in raw.columns:
+                    raw[column] = pd.NA
+                raw["Year"] = pd.to_numeric(raw["Year"], errors="coerce")
+                raw[column] = pd.to_numeric(raw[column], errors="coerce")
+                raw = raw.dropna(subset=["Region", "Year"])
+                raw = raw[raw["Region"].isin(REGIONS)].sort_values("Year")
+                raw = raw.drop_duplicates("Region", keep="last")
+                latest = raw.set_index("Region")
+                values = {}
+                years = {}
+                for region in quality_regions:
+                    if region in latest.index and pd.notna(latest.at[region, column]):
+                        values[region] = float(latest.at[region, column])
+                        year_value = latest.at[region, "Year"]
+                        years[region] = int(year_value) if pd.notna(year_value) else None
+                    else:
+                        values[region] = None
+                        years[region] = None
+
+                available = sum(value is not None for value in values.values())
+                total = len(quality_regions)
+                years_present = [year for year in years.values() if year is not None]
+                all_years = pd.to_numeric(raw["Year"], errors="coerce").dropna()
+                missing_regions = [region for region, value in values.items() if value is None]
+                quality_rows.append({
+                    "Indicator": indicator_name,
+                    "Coverage": f"{available}/{total}" if total else "0/0",
+                    "Coverage (%)": round(100 * available / total, 1) if total else 0,
+                    "Regions with data": available,
+                    "Regions missing data": total - available,
+                    "Latest reference year (range)": (
+                        f"{min(years_present)}–{max(years_present)}" if years_present else "Unavailable"
+                    ),
+                    "Source years in file": (
+                        f"{int(all_years.min())}–{int(all_years.max())}" if not all_years.empty else "Unavailable"
+                    ),
+                    "Source": details["source"],
+                    "Unit": details["unit"],
+                    "Missing regions": ", ".join(missing_regions) if missing_regions else "None",
+                })
+                coverage_columns[indicator_name] = values
+                year_columns[indicator_name] = years
+            except Exception as error:
+                total = len(quality_regions)
+                quality_rows.append({
+                    "Indicator": indicator_name,
+                    "Coverage": f"0/{total}" if total else "0/0",
+                    "Coverage (%)": 0.0,
+                    "Regions with data": 0,
+                    "Regions missing data": total,
+                    "Latest reference year (range)": "Unavailable",
+                    "Source years in file": "Unavailable",
+                    "Source": details["source"],
+                    "Unit": details["unit"],
+                    "Missing regions": ", ".join(quality_regions) if quality_regions else "None",
+                })
+                coverage_columns[indicator_name] = {region: None for region in quality_regions}
+                year_columns[indicator_name] = {region: None for region in quality_regions}
+                st.warning(f"Could not check {indicator_name}: {error}")
+
+    summary = pd.DataFrame(quality_rows)
+    total_cells = len(quality_regions) * len(INDICATORS)
+    available_cells = sum(
+        value is not None
+        for indicator_values in coverage_columns.values()
+        for value in indicator_values.values()
+    )
+    overall_coverage = (100 * available_cells / total_cells) if total_cells else 0
+
+    metric_cols = st.columns(3)
+    metric_cols[0].metric("Regions included", len(quality_regions))
+    metric_cols[1].metric("Indicators tracked", len(INDICATORS))
+    metric_cols[2].metric("Available region-indicator pairs", f"{overall_coverage:.1f}%")
+
+    st.subheader("Indicator coverage")
+    st.caption(
+        "Coverage counts the latest usable value for each region. A region with "
+        "older data may count as covered, so always check the reference-year columns."
+    )
+    st.dataframe(
+        summary[[
+            "Indicator", "Coverage", "Coverage (%)", "Regions with data",
+            "Regions missing data", "Latest reference year (range)",
+            "Source years in file", "Unit",
+        ]],
+        use_container_width=True,
+        hide_index=True,
+    )
+    st.download_button(
+        "Download indicator coverage (CSV)",
+        data=summary.to_csv(index=False).encode("utf-8-sig"),
+        file_name="india_atlas_indicator_coverage.csv",
+        mime="text/csv",
+    )
+
+    st.subheader("Region-by-indicator availability")
+    st.write(
+        "Each cell shows the latest available reference year. ‘Missing’ means "
+        "the atlas has no usable value for that region and indicator."
+    )
+    matrix_rows = []
+    for region in quality_regions:
+        row = {"Region": region, "Region type": "Union Territory" if region in UT_REGIONS else "State"}
+        for indicator_name in INDICATORS:
+            year = year_columns.get(indicator_name, {}).get(region)
+            row[indicator_name] = str(year) if year is not None else "Missing"
+        matrix_rows.append(row)
+    matrix = pd.DataFrame(matrix_rows)
+    st.dataframe(matrix, use_container_width=True, hide_index=True)
+    st.download_button(
+        "Download region coverage matrix (CSV)",
+        data=matrix.to_csv(index=False).encode("utf-8-sig"),
+        file_name="india_atlas_region_coverage_matrix.csv",
+        mime="text/csv",
+    )
+
+    st.subheader("Interpretation and data-quality notes")
+    st.markdown(
+        "- **Different reference years:** indicators are drawn from different "
+        "publications and periods. A higher coverage percentage does not mean "
+        "the data is more recent.\n"
+        "- **Definitions differ:** literacy, poverty, unemployment, school "
+        "enrolment, health spending, income and power availability measure "
+        "different concepts and may use different populations or methods.\n"
+        "- **Older series need caution:** the state poverty-rate series is from "
+        "2011–12. Do not describe it as a current poverty estimate.\n"
+        "- **Missing is not zero:** unavailable values are treated as missing, "
+        "not as zero or evidence of poor performance.\n"
+        "- **Source transparency:** source names are shown in the coverage table. "
+        "This page does not independently certify the accuracy of each source; "
+        "verify the original publication before making policy claims."
+    )
+
 
 elif page == "About & Sources":
     st.header("About the India Development Atlas")
