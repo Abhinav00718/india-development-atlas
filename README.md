@@ -44,23 +44,6 @@ Not every indicator has a value for every region or year. See `DATA_DICTIONARY.m
 - Requests
 - CSV data files and a GeoJSON boundary file hosted in this repository
 
-## Run locally
-
-1. Install Python 3.10 or newer.
-2. Clone or download this repository.
-3. Install the packages used by the app:
-
-   ```bash
-   pip install streamlit pandas plotly requests
-   ```
-
-4. Run the application:
-
-   ```bash
-   streamlit run app-3.py
-   ```
-
-The app loads data and boundaries from the repository's raw GitHub URLs. An internet connection is required.
 
 ## Data and limitations
 
@@ -70,13 +53,7 @@ The app loads data and boundaries from the repository's raw GitHub URLs. An inte
 - Some data files contain values that still require row-by-row source verification. The presence of a source label does not itself establish that every value has been independently audited.
 - Correlations in the Economic Relationships Lab are descriptive. They do not establish causation and may combine observations from different years.
 
-## Reproducibility and change management
 
-Keep the existing working app as a stable baseline. Make future changes in small increments, preserve the current GeoJSON unless a boundary change is specifically required, and check the items in `QA_CHECKLIST.md` after each code change.
-
-## Suggested citation
-
-Abhinav BJ. *India Development Atlas* [interactive data application]. GitHub repository: https://github.com/Abhinav00718/india-development-atlas. Accessed [insert date].
 
 ## Repository contents
 
